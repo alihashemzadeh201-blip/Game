@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flight Simulator 3D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0e14;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  canvas { display: block; }
+
+  .panel {
+    position: fixed; background: rgba(8, 12, 18, 0.62); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; color: #eaf2fb;
+    z-index: 10; user-select: none;
+  }
+
+  #score { top: 16px; left: 16px; padding: 10px 16px; font-size: 15px; line-height: 1.6; }
+  #score b { color: #ffd76a; font-size: 20px; }
+
+  #msg {
+    position: fixed; top: 22%; left: 50%; transform: translate(-50%, -50%);
+    color: #fff; font-size: 38px; font-weight: 800; text-align: center;
+    text-shadow: 0 4px 22px rgba(0,0,0,0.8); opacity: 0; transition: opacity 0.25s;
+    z-index: 11; pointer-events: none; white-space: nowrap;
+  }
+  #warn {
+    position: fixed; top: 12%; left: 50%; transform: translateX(-50%);
+    color: #ff5252; font-size: 26px; font-weight: 900; letter-spacing: 3px;
+    z-index: 11; display: none; animation: blink 0.5s steps(2) infinite;
+    text-shadow: 0 2px 12px rgba(0,0,0,0.8);
+  }
+  @keyframes blink { 50% { opacity: 0.15; } }
+
+  #instruments { bottom: 16px; right: 16px; padding: 12px 16px; font-size: 13px;
+    font-variant-numeric: tabular-nums; line-height: 1.7; min-width: 168px; }
+  #instruments .val { float: right; font-weight: 700; color: #9fd8ff; }
+  #thrBar { height: 8px; background: #22303f; border-radius: 4px; margin: 6px 0 2px; overflow: hidden; }
+  #thrFill { height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #7dd3fc); border-radius: 4px; }
+  #gearDot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: #4ade80; margin-right: 6px; box-shadow: 0 0 8px currentColor; }
+
+  #att { position: fixed; bottom: 16px; left: 16px; z-index: 10; border-radius: 50%;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
+
+  #hint { bottom: 16px; left: 50%; transform: translateX(-50%); padding: 8px 16px;
+    font-size: 12.5px; color: #9fb0c3; white-space: nowrap; }
+  #hint b { color: #d9e6f5; }
+
+  #boot {
+    position: fixed; top: 45%; left: 50%; transform: translate(-50%, -50%);
+    color: #9fb0c3; font-size: 15px; z-index: 50; letter-spacing: 1px;
+    text-shadow: 0 2px 8px #000;
+  }
+  #err {
+    position: fixed; top: 38%; left: 50%; transform: translate(-50%, 0);
+    max-width: 84%; color: #ff6b6b; background: rgba(20, 8, 8, 0.9);
+    border: 1px solid #ff5252; border-radius: 10px; padding: 14px 18px;
+    font: 13px/1.5 Consolas, monospace; white-space: pre-wrap;
+    z-index: 100; display: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="score" class="panel">RINGS <b id="ringScore">0</b> &nbsp;•&nbsp; BALLOONS <b id="balScore">0</b></div>
+<div id="msg"></div>
+<div id="warn">STALL</div>
+
+<div id="instruments" class="panel">
+  <div>SPD <span class="val" id="spd">0 kt</span></div>
+  <div>ALT <span class="val" id="alt">0 ft</span></div>
+  <div>V/S <span class="val" id="vs">0 fpm</span></div>
+  <div>THR</div>
+  <div id="thrBar"><div id="thrFill"></div></div>
+  <div style="margin-top:6px"><span id="gearDot"></span><span id="gearTxt">GEAR DOWN</span></div>
+</div>
+
+<canvas id="att" width="150" height="150"></canvas>
+
+<div id="hint" class="panel">
+  <b>W/S</b> throttle &nbsp; <b>Arrows</b> stick (pull <b>Down</b> to climb) &nbsp; <b>A/D</b> rudder &nbsp;
+  <b>G</b> gear &nbsp; <b>Space</b> brake &nbsp; <b>C</b> camera &nbsp; <b>R</b> reset
+</div>
+
+<div id="boot">booting flight simulator...</div>
+<div id="err"></div>
+
+<script>
+/* diagnostics: surface ANY failure on screen (runs before the module) */
+(function () {
+  const errEl = document.getElementById('err');
+  window.bootLog = function (t) {
+    const b = document.getElementById('boot');
+    if (b) b.textContent = t;
+  };
+  window.bootDone = function () {
+    const b = document.getElementById('boot');
+    if (b) b.style.display = 'none';
+  };
+  window.showErr = function (t) {
+    errEl.style.display = 'block';
+    errEl.textContent = 'ERROR: ' + t + '\n\n(report this message)';
+  };
+  addEventListener('error', function (e) {
+    if (e.message) showErr(e.message + (e.filename ? ' @ ' + e.filename.split('/').pop() + ':' + e.lineno : ''));
+    else if (e.target && e.target.src) showErr('failed to load: ' + e.target.src);
+  }, true);
+  addEventListener('unhandledrejection', function (e) {
+    showErr('async: ' + ((e.reason && e.reason.message) || e.reason));
+  });
+})();
+</script>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* =====================================================================
+   RENDERER / SCENE / POST
+===================================================================== */
+bootLog('starting renderer...');
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+} catch (e) {
+  showErr('WebGL could not start: ' + e.message);
+  throw e;
+}
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0xcfe0ee, 3200, 11500);
+
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.3, 22000);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.45, 0.6, 0.82));
+composer.addPass(new OutputPass());
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+});
+
+/* =====================================================================
+   CANVAS TEXTURES
+===================================================================== */
+function canvasTexture(w, h, draw, repeatX, repeatY) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  if (repeatX) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeatX, repeatY); }
+  t.anisotropy = 8;
+  return t;
+}
+const rand = (a, b) => a + Math.random() * (b - a);
+
+/* --- terrain: mottled grass with dirt patches --- */
+const terrainTex = canvasTexture(512, 512, (g, w, h) => {
+  g.fillStyle = '#4a7c3a'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 9000; i++) {
+    const shades = ['#437034', '#538647', '#3f6b31', '#5b8a49', '#6b8f4e', '#7a6f42'];
+    g.fillStyle = shades[(Math.random() * shades.length) | 0];
+    g.globalAlpha = rand(0.08, 0.3);
+    const s = rand(2, 14);
+    g.fillRect(Math.random() * w, Math.random() * h, s, s * rand(0.4, 1.4));
+  }
+  g.globalAlpha = 0.16;                              // dirt blotches
+  for (let i = 0; i < 26; i++) {
+    g.fillStyle = '#7a6a44';
+    g.beginPath();
+    g.ellipse(Math.random() * w, Math.random() * h, rand(12, 46), rand(8, 30), Math.random() * 3, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.globalAlpha = 1;
+}, 90, 90);
+
+/* --- runway: asphalt + markings --- */
+const runwayTex = canvasTexture(256, 1024, (g, w, h) => {
+  g.fillStyle = '#33373c'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 5000; i++) {
+    g.fillStyle = Math.random() > 0.5 ? '#3a3e44' : '#2c3036';
+    g.globalAlpha = rand(0.1, 0.3);
+    g.fillRect(Math.random() * w, Math.random() * h, rand(1, 4), rand(1, 4));
+  }
+  g.globalAlpha = 1;
+  g.fillStyle = '#e8e8e8';
+  g.fillRect(6, 0, 4, h); g.fillRect(w - 10, 0, 4, h);        // edge lines
+  const dash = 64, gap = 48;
+  for (let y = 0; y < h; y += dash + gap) g.fillRect(w / 2 - 3, y, 6, dash); // centerline
+  for (const end of [0, 1]) {                                  // threshold "piano keys"
+    const y0 = end === 0 ? 10 : h - 10 - 70;
+    for (let i = 0; i < 6; i++) g.fillRect(24 + i * 36, y0, 18, 70);
+  }
+});
+
+/* --- sky: vertical gradient --- */
+const skyTex = canvasTexture(16, 1024, (g, w, h) => {
+  const gr = g.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0.0, '#1a4f96');
+  gr.addColorStop(0.45, '#4a90d9');
+  gr.addColorStop(0.72, '#9cc8ee');
+  gr.addColorStop(0.88, '#d8ecf7');
+  gr.addColorStop(1.0, '#f7dcae');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+});
+
+/* --- fuselage: white paint, red cheatline, windows --- */
+const fuselageTex = canvasTexture(1024, 256, (g, w, h) => {
+  g.fillStyle = '#f2f4f6'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#d43a2e';                                    // cheatline
+  g.fillRect(0, h * 0.52, w, h * 0.10);
+  g.fillStyle = '#2b6cb0';
+  g.fillRect(0, h * 0.62, w, h * 0.05);
+  g.fillStyle = '#20303f';                                    // windows
+  for (let i = 0; i < 9; i++) {
+    const x = w * 0.30 + i * w * 0.055;
+    g.fillRect(x, h * 0.30, w * 0.032, h * 0.14);
+  }
+  g.fillStyle = '#d43a2e';                                    // nose band
+  g.fillRect(w * 0.90, 0, w * 0.04, h);
+});
+
+/* --- soft round glow (clouds, sun halo) --- */
+function glowTexture(inner, outer) {
+  return canvasTexture(128, 128, (g) => {
+    const gr = g.createRadialGradient(64, 64, 4, 64, 64, 62);
+    gr.addColorStop(0, inner); gr.addColorStop(1, outer);
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  });
+}
+const cloudTex = glowTexture('rgba(255,255,255,0.95)', 'rgba(255,255,255,0)');
+const haloTex = glowTexture('rgba(255,240,200,0.9)', 'rgba(255,220,150,0)');
+
+/* =====================================================================
+   SKY / SUN / CLOUDS
+===================================================================== */
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(10000, 32, 20),
+  new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false })
+);
+scene.add(sky);
+
+const SUN_DIR = new THREE.Vector3(0.55, 0.42, 0.35).normalize();
+const sunMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(260, 20, 16),
+  new THREE.MeshBasicMaterial({ color: 0xfff6d8, fog: false })
+);
+sunMesh.position.copy(SUN_DIR).multiplyScalar(8800);
+scene.add(sunMesh);
+const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: haloTex, transparent: true, depthWrite: false, fog: false,
+  blending: THREE.AdditiveBlending, opacity: 0.9
+}));
+halo.scale.setScalar(2600);
+halo.position.copy(sunMesh.position);
+scene.add(halo);
+
+scene.add(new THREE.HemisphereLight(0xbfd9ff, 0x5a7448, 0.75));
+const sun = new THREE.DirectionalLight(0xfff2dd, 2.0);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -150; sun.shadow.camera.right = 150;
+sun.shadow.camera.top = 150; sun.shadow.camera.bottom = -150;
+sun.shadow.camera.near = 10; sun.shadow.camera.far = 600;
+sun.shadow.bias = -0.0004;
+sun.shadow.camera.updateProjectionMatrix();
+scene.add(sun, sun.target);
+
+const clouds = [];
+for (let i = 0; i < 28; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: cloudTex, transparent: true, depthWrite: false, opacity: rand(0.5, 0.9)
+  }));
+  s.position.set(rand(-3500, 3500), rand(280, 750), rand(-3500, 3500));
+  s.scale.set(rand(320, 800), rand(90, 220), 1);
+  s.userData.vx = rand(1.5, 5);
+  clouds.push(s); scene.add(s);
+}
+
+/* =====================================================================
+   TERRAIN
+===================================================================== */
+bootLog('generating terrain...');
+const clamp01 = t => Math.max(0, Math.min(1, t));
+const smoothstep = (a, b, t) => { const x = clamp01((t - a) / (b - a)); return x * x * (3 - 2 * x); };
+
+function rawH(x, z) {
+  const hills = 90 * Math.sin(x * 0.00045 + 0.9) * Math.sin(z * 0.0005 + 0.3) +
+                55 * Math.sin(x * 0.0009 + 1.7) * Math.sin(z * 0.0011) +
+                22 * Math.sin(x * 0.0031 + 0.4) * Math.sin(z * 0.0026 + 2.1) +
+                 7 * Math.sin(x * 0.011) * Math.sin(z * 0.013 + 1.2);
+  // ridged mountain ranges (up to ~700 m) with rough high-altitude detail
+  const r = 1 - Math.abs(Math.sin(x * 0.00055 + 2.4) * Math.sin(z * 0.00062 + 1.1));
+  const ridge = r * r * r * 640;
+  const detail = 34 * Math.sin(x * 0.0045 + 1.2) * Math.sin(z * 0.005 + 2.2) * (ridge / 640);
+  return hills * 0.35 + ridge + detail;
+}
+function terrainHeight(x, z) {
+  const d = Math.hypot(x, z);
+  const flat = smoothstep(700, 2000, d);        // airport area (incl. full runway) is flat
+  let h = rawH(x, z) * flat;
+  if (h < 0) h *= 0.35;
+  return Math.max(h, 0);
+}
+
+const terGeo = new THREE.PlaneGeometry(7000, 7000, 200, 200);
+terGeo.rotateX(-Math.PI / 2);
+{
+  const p = terGeo.attributes.position;
+  const colors = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) {
+    const h = terrainHeight(p.getX(i), p.getZ(i));
+    p.setY(i, h);
+    // altitude tint: grass -> rock -> snow (multiplies with the texture)
+    const rock = smoothstep(150, 260, h);
+    const snow = smoothstep(360, 490, h);
+    let r = 1 - rock * 0.45, g = 1 - rock * 0.5, b = 1 - rock * 0.55;
+    r = r * (1 - snow) + 1.45 * snow;
+    g = g * (1 - snow) + 1.45 * snow;
+    b = b * (1 - snow) + 1.50 * snow;
+    colors[i * 3] = r; colors[i * 3 + 1] = g; colors[i * 3 + 2] = b;
+  }
+  terGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  terGeo.computeVertexNormals();
+}
+const terrain = new THREE.Mesh(terGeo,
+  new THREE.MeshStandardMaterial({ map: terrainTex, roughness: 1, vertexColors: true }));
+terrain.receiveShadow = true;
+scene.add(terrain);
+
+const water = new THREE.Mesh(
+  new THREE.PlaneGeometry(40000, 40000),
+  new THREE.MeshStandardMaterial({ color: 0x2a6b9e, roughness: 0.25, metalness: 0.35 })
+);
+water.rotation.x = -Math.PI / 2;
+water.position.y = -6;
+scene.add(water);
+
+/* =====================================================================
+   AIRPORT: runway, lights, hangars, tower
+===================================================================== */
+const runway = new THREE.Mesh(
+  new THREE.PlaneGeometry(30, 1000),
+  new THREE.MeshStandardMaterial({ map: runwayTex, roughness: 0.95 })
+);
+runway.rotation.x = -Math.PI / 2;
+runway.position.y = 0.04;
+runway.receiveShadow = true;
+scene.add(runway);
+
+function addLightOrb(x, y, z, color, intensity) {
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(0.32, 8, 6),
+    new THREE.MeshStandardMaterial({ color: 0x111111, emissive: color, emissiveIntensity: intensity })
+  );
+  m.position.set(x, y, z);
+  scene.add(m);
+}
+for (let z = -480; z <= 480; z += 60) {
+  addLightOrb(16, 0.3, z, 0xcfe8ff, 1.1);
+  addLightOrb(-16, 0.3, z, 0xcfe8ff, 1.1);
+}
+for (let x = -14; x <= 14; x += 4) {
+  addLightOrb(x, 0.3, -500, 0x35e065, 1.6);       // approach end (behind us)
+  addLightOrb(x, 0.3, 500, 0xff4040, 1.6);        // far end
+}
+
+function hangar(x, z, w, hgt, d, color) {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.BoxGeometry(w, hgt, d),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.8 }));
+  base.position.y = hgt / 2;
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 1.5, 1.4, d + 1.5),
+    new THREE.MeshStandardMaterial({ color: 0x8a929c, roughness: 0.7 }));
+  roof.position.y = hgt + 0.7;
+  g.add(base, roof);
+  g.position.set(x, 0, z);
+  g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  scene.add(g);
+}
+hangar(120, -320, 26, 10, 40, 0x4a6b8a);
+hangar(180, -240, 20, 8, 30, 0x6b5a8a);
+hangar(-140, -260, 24, 9, 36, 0x8a5a4a);
+
+const tower = new THREE.Group();
+{
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(3, 4, 22, 12),
+    new THREE.MeshStandardMaterial({ color: 0xd8d4c8, roughness: 0.85 }));
+  shaft.position.y = 11;
+  const cab = new THREE.Mesh(new THREE.CylinderGeometry(5.5, 4.5, 5, 12),
+    new THREE.MeshStandardMaterial({ color: 0x22404f, roughness: 0.3, metalness: 0.4 }));
+  cab.position.y = 24.5;
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 6),
+    new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xff3030, emissiveIntensity: 2.2 }));
+  beacon.position.y = 27.5;
+  tower.add(shaft, cab, beacon);
+  tower.position.set(150, 0, -140);
+  tower.traverse(o => { if (o.isMesh) { o.castShadow = true; } });
+  scene.add(tower);
+}
+
+/* =====================================================================
+   AIRPLANE  (detailed: spinner, prop, canopy, gear, nav lights)
+===================================================================== */
+const plane = new THREE.Group();
+const paint = new THREE.MeshStandardMaterial({ map: fuselageTex, roughness: 0.5, metalness: 0.15 });
+const redPaint = new THREE.MeshStandardMaterial({ color: 0xd43a2e, roughness: 0.5, metalness: 0.15 });
+const darkMetal = new THREE.MeshStandardMaterial({ color: 0x2c313a, roughness: 0.4, metalness: 0.6 });
+
+{
+  const fus = new THREE.Mesh(new THREE.CapsuleGeometry(1.05, 6.8, 8, 18), paint);
+  fus.rotation.x = Math.PI / 2;
+  plane.add(fus);
+
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(13.6, 0.22, 2.1), redPaint);
+  wing.position.set(0, -0.35, 0.5);
+  plane.add(wing);
+  const wingTipL = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.24, 2.1), redPaint);
+  wingTipL.position.set(-6.9, -0.35, 0.5); plane.add(wingTipL);
+  const wingTipR = wingTipL.clone(); wingTipR.position.x = 6.9; plane.add(wingTipR);
+
+  const stab = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.18, 1.4), redPaint);
+  stab.position.set(0, 0.35, -4.1); plane.add(stab);
+  const finGeo = new THREE.BoxGeometry(0.18, 2.1, 1.7);
+  const fin = new THREE.Mesh(finGeo, redPaint);
+  fin.position.set(0, 1.35, -3.9); plane.add(fin);
+
+  const canopy = new THREE.Mesh(
+    new THREE.SphereGeometry(0.95, 18, 12),
+    new THREE.MeshPhysicalMaterial({
+      color: 0x9fd4ff, roughness: 0.05, metalness: 0.1,
+      transparent: true, opacity: 0.55
+    })
+  );
+  canopy.scale.set(0.85, 0.62, 1.5);
+  canopy.position.set(0, 0.95, 1.2);
+  plane.add(canopy);
+
+  const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.3, 14), redPaint);
+  spinner.rotation.x = Math.PI / 2;
+  spinner.position.z = 4.75;
+  plane.add(spinner);
+}
+const prop = new THREE.Group();
+{
+  const bladeGeo = new THREE.BoxGeometry(0.22, 2.6, 0.07);
+  const b1 = new THREE.Mesh(bladeGeo, darkMetal);
+  const b2 = new THREE.Mesh(bladeGeo, darkMetal);
+  b2.rotation.z = Math.PI / 2;
+  prop.add(b1, b2);
+  prop.position.z = 5.15;
+  plane.add(prop);
+}
+const propDisc = new THREE.Mesh(
+  new THREE.CircleGeometry(1.35, 24),
+  new THREE.MeshBasicMaterial({ color: 0xbbbbbb, transparent: true, opacity: 0, side: THREE.DoubleSide })
+);
+propDisc.position.z = 5.16;
+plane.add(propDisc);
+
+/* landing gear */
+const gear = new THREE.Group();
+{
+  const strutGeo = new THREE.CylinderGeometry(0.07, 0.07, 1.1, 8);
+  const wheelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.22, 14);
+  for (const [x, z] of [[-1.15, -0.1], [1.15, -0.1], [0, 3.1]]) {
+    const s = new THREE.Mesh(strutGeo, darkMetal);
+    s.position.set(x, -1.15, z);
+    const w = new THREE.Mesh(wheelGeo, new THREE.MeshStandardMaterial({ color: 0x16181c, roughness: 0.9 }));
+    w.rotation.z = Math.PI / 2;
+    w.position.set(x, -1.72, z);
+    gear.add(s, w);
+  }
+  plane.add(gear);
+}
+
+/* nav lights: red left (+x), green right (-x), white tail strobe */
+function navLight(x, y, z, color) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6),
+    new THREE.MeshStandardMaterial({ color: 0x111111, emissive: color, emissiveIntensity: 2.4 }));
+  m.position.set(x, y, z);
+  plane.add(m);
+  return m;
+}
+const navL = navLight(6.95, -0.3, 0.5, 0xff2222);
+const navR = navLight(-6.95, -0.3, 0.5, 0x22ff44);
+const strobe = navLight(0, 0.4, -4.9, 0xffffff);
+
+plane.traverse(o => { if (o.isMesh) o.castShadow = true; });
+scene.add(plane);
+
+/* =====================================================================
+   FLY-THROUGH OBJECTS: rings + balloons
+===================================================================== */
+const rings = [];
+const RING_R = 24;
+function placeAway(obj, minPlaneDist) {
+  for (let tries = 0; tries < 20; tries++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = 600 + Math.random() * 2100;
+    const x = Math.cos(a) * d, z = Math.sin(a) * d;
+    const y = Math.max(50 + Math.random() * 330, terrainHeight(x, z) + 45);
+    if (plane.position.distanceTo(new THREE.Vector3(x, y, z)) > minPlaneDist) {
+      obj.position.set(x, y, z);
+      return;
+    }
+  }
+  obj.position.set(800, 150, 800);
+}
+for (let i = 0; i < 10; i++) {
+  const r = new THREE.Mesh(
+    new THREE.TorusGeometry(RING_R, 1.8, 12, 40),
+    new THREE.MeshStandardMaterial({
+      color: 0x18c8e8, emissive: 0x18c8e8, emissiveIntensity: 1.4, roughness: 0.35
+    })
+  );
+  r.rotation.y = Math.random() * Math.PI * 2;
+  placeAway(r, 300);
+  scene.add(r);
+  rings.push(r);
+}
+
+const balloons = [];
+{
+  const balTex = canvasTexture(256, 256, (g, w, h) => {
+    const cols = ['#e14b4b', '#f2f2f2', '#e18a2e', '#f2f2f2', '#3b82f6', '#f2f2f2'];
+    const sw = w / cols.length;
+    cols.forEach((c, i) => { g.fillStyle = c; g.fillRect(i * sw, 0, sw, h); });
+  });
+  for (let i = 0; i < 6; i++) {
+    const grp = new THREE.Group();
+    const env = new THREE.Mesh(new THREE.SphereGeometry(8, 20, 14),
+      new THREE.MeshStandardMaterial({ map: balTex, roughness: 0.7 }));
+    const basket = new THREE.Mesh(new THREE.BoxGeometry(2, 1.6, 2),
+      new THREE.MeshStandardMaterial({ color: 0x6b4a2a, roughness: 0.9 }));
+    basket.position.y = -10.5;
+    grp.add(env, basket);
+    grp.userData.respawn = 0;
+    placeAway(grp, 350);
+    grp.position.y = Math.max(45 + Math.random() * 200,
+      terrainHeight(grp.position.x, grp.position.z) + 40);   // never inside a mountain
+    balloons.push(grp); scene.add(grp);
+  }
+}
+
+/* =====================================================================
+   PARTICLES
+===================================================================== */
+const MAX_P = 400;
+const pGeo = new THREE.BufferGeometry();
+const pPos = new Float32Array(MAX_P * 3).fill(-9999);
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+const pVel = new Float32Array(MAX_P * 3);
+const pLife = new Float32Array(MAX_P).fill(0);
+const pCol = new Float32Array(MAX_P * 3);
+let pNext = 0;
+const pMat = new THREE.PointsMaterial({
+  size: 1.6, vertexColors: true, transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false
+});
+pGeo.setAttribute('color', new THREE.BufferAttribute(pCol, 3));
+const particles = new THREE.Points(pGeo, pMat);
+particles.frustumCulled = false;
+scene.add(particles);
+
+function burst(pos, n, speed, r, g, b) {
+  for (let i = 0; i < n; i++) {
+    const k = pNext; pNext = (pNext + 1) % MAX_P;
+    pPos[k * 3] = pos.x; pPos[k * 3 + 1] = pos.y; pPos[k * 3 + 2] = pos.z;
+    const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+    const s = speed * (0.35 + Math.random() * 0.65);
+    pVel[k * 3] = Math.sin(ph) * Math.cos(th) * s;
+    pVel[k * 3 + 1] = Math.cos(ph) * s;
+    pVel[k * 3 + 2] = Math.sin(ph) * Math.sin(th) * s;
+    pCol[k * 3] = r; pCol[k * 3 + 1] = g; pCol[k * 3 + 2] = b;
+    pLife[k] = 1;
+  }
+}
+function updateParticles(dt) {
+  for (let k = 0; k < MAX_P; k++) {
+    if (pLife[k] <= 0) continue;
+    pLife[k] -= dt * 1.1;
+    if (pLife[k] <= 0) { pPos[k * 3 + 1] = -9999; continue; }
+    pVel[k * 3 + 1] -= 12 * dt;
+    pPos[k * 3] += pVel[k * 3] * dt;
+    pPos[k * 3 + 1] += pVel[k * 3 + 1] * dt;
+    pPos[k * 3 + 2] += pVel[k * 3 + 2] * dt;
+  }
+  pGeo.attributes.position.needsUpdate = true;
+  pGeo.attributes.color.needsUpdate = true;
+}
+
+/* =====================================================================
+   AUDIO (procedural engine + wind + chimes)
+===================================================================== */
+let actx = null, eng = null;
+function initAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return; }
+  try {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const master = actx.createGain(); master.gain.value = 0.5;
+    master.connect(actx.destination);
+    const o1 = actx.createOscillator(); o1.type = 'sawtooth';
+    const o2 = actx.createOscillator(); o2.type = 'square';
+    const g1 = actx.createGain(), g2 = actx.createGain();
+    g2.gain.value = 0.35;
+    const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
+    o1.connect(g1); o2.connect(g2); g1.connect(lp); g2.connect(lp); lp.connect(master);
+    const nb = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+    const d = nb.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    const noise = actx.createBufferSource(); noise.buffer = nb; noise.loop = true;
+    const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 700;
+    const wg = actx.createGain(); wg.gain.value = 0;
+    noise.connect(bp); bp.connect(wg); wg.connect(master);
+    o1.start(); o2.start(); noise.start();
+    eng = { o1, o2, g1, lp, wg };
+  } catch (e) { actx = null; }
+}
+addEventListener('keydown', initAudio);
+addEventListener('pointerdown', initAudio);
+
+function tone(freq, dur, type, gain, slideTo) {
+  if (!actx) return;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, actx.currentTime);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, actx.currentTime + dur);
+  g.gain.setValueAtTime(gain, actx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+  o.connect(g); g.connect(actx.destination);
+  o.start(); o.stop(actx.currentTime + dur);
+}
+const sRing = () => { tone(880, 0.14, 'sine', 0.22); setTimeout(() => tone(1320, 0.22, 'sine', 0.2), 90); };
+const sPop = () => tone(420, 0.25, 'triangle', 0.3, 90);
+const sCrash = () => { tone(120, 0.6, 'sawtooth', 0.4, 40); tone(60, 0.8, 'square', 0.25, 30); };
+const sGear = () => tone(300, 0.12, 'square', 0.12, 180);
+const sLand = () => tone(180, 0.18, 'sine', 0.2, 120);
+
+/* =====================================================================
+   FLIGHT MODEL
+===================================================================== */
+const V_STALL = 32, V_ROTATE = 38, GEAR_H = 2.05;   // wheel bottoms sit at -2.06
+const A_THRUST = 14, DRAG_K = 0.0012, GEAR_DRAG = 2.2;
+
+/* Convention: pitch > 0 = nose up, roll > 0 = bank LEFT, yaw increases turning LEFT.
+   Stick feel: pull back (ArrowDown) climbs, ArrowLeft banks (and turns) left. */
+const F = {
+  mode: 'ground',              // ground | air | crashed
+  pos: new THREE.Vector3(0, GEAR_H, -460),
+  yaw: 0, pitch: 0, roll: 0,
+  v: 0, throttle: 0, rpm: 0,   // rpm lags throttle (engine spool)
+  gearT: 1,                    // 1 = fully down, 0 = up
+  gearTarget: 1,
+  vy: 0,
+  brake: false,
+  score: { rings: 0, balloons: 0 },
+  crashTimer: 0,
+  camMode: 'chase',
+  shake: 0,
+  stalling: false,
+  rotateCalled: false,
+};
+const keys = new Set();
+addEventListener('keydown', e => {
+  keys.add(e.code);
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+  if (e.code === 'KeyG' && F.mode === 'air') {
+    F.gearTarget = F.gearTarget > 0.5 ? 0 : 1;
+    sGear();
+    showMsg(F.gearTarget ? 'Gear down' : 'Gear up', 0.9);
+  }
+  if (e.code === 'KeyC') F.camMode = F.camMode === 'chase' ? 'cockpit' : 'chase';
+  if (e.code === 'KeyR') resetFlight();
+});
+addEventListener('keyup', e => keys.delete(e.code));
+
+function resetFlight() {
+  F.mode = 'ground';
+  F.pos.set(0, GEAR_H, -460);
+  F.yaw = 0; F.pitch = 0; F.roll = 0;
+  F.v = 0; F.throttle = 0; F.rpm = 0; F.vy = 0;
+  F.gearT = 1; F.gearTarget = 1;
+  F.crashTimer = 0; F.shake = 0; F.stalling = false; F.rotateCalled = false;
+  showMsg('Throttle up (W) — pull back (Arrow Down) at 75 kt', 2.4);
+}
+
+const msgEl = document.getElementById('msg');
+let msgTO = null;
+function showMsg(t, hold) {
+  msgEl.textContent = t;
+  msgEl.style.opacity = 1;
+  clearTimeout(msgTO);
+  msgTO = setTimeout(() => msgEl.style.opacity = 0, (hold || 1.4) * 1000);
+}
+
+function crash(reason) {
+  if (F.mode === 'crashed') return;
+  F.mode = 'crashed';
+  F.crashTimer = 2.4;
+  F.shake = 1.4;
+  burst(F.pos, 90, 26, 1, 0.55, 0.15);
+  burst(F.pos, 50, 12, 0.9, 0.9, 0.9);
+  sCrash();
+  showMsg(reason + ' — resetting...', 2.2);
+}
+
+const fwdVec = () => new THREE.Vector3(
+  Math.sin(F.yaw) * Math.cos(F.pitch), Math.sin(F.pitch), Math.cos(F.yaw) * Math.cos(F.pitch));
+
+function stepFlight(dt) {
+  const prevY = F.pos.y;
+  const groundY = terrainHeight(F.pos.x, F.pos.z);
+
+  // throttle & gear always respond
+  if (keys.has('KeyW')) F.throttle = Math.min(1, F.throttle + dt * 0.7);
+  if (keys.has('KeyS')) F.throttle = Math.max(0, F.throttle - dt * 0.9);
+  F.gearT += (F.gearTarget - F.gearT) * Math.min(1, dt * 2.2);
+  F.brake = keys.has('Space');
+
+  if (F.mode === 'crashed') {
+    F.crashTimer -= dt;
+    if (F.crashTimer <= 0) resetFlight();
+    return;
+  }
+
+  const drag = DRAG_K * F.v * F.v + GEAR_DRAG * F.gearT * (F.mode === 'air' ? 1 : 0);
+  F.rpm += (F.throttle - F.rpm) * Math.min(1, dt * 1.6);   // engine spool lag
+  const thrust = A_THRUST * F.rpm * (0.55 + 0.012 * F.v);  // power builds with speed
+
+  if (F.mode === 'ground') {
+    const onRunway = Math.abs(F.pos.x) < 16 && Math.abs(F.pos.z) < 505;
+    let decel = drag + (onRunway ? 0.4 : 6);            // grass is heavy
+    if (F.brake) decel += 12;
+    F.v = Math.max(0, F.v + (thrust - decel) * dt);
+
+    // nosewheel steering (responsive at taxi speed, calmer on a fast roll)
+    const steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0);
+    F.yaw += steer * Math.min(F.v / 12, 1) * (1.4 / (1 + F.v / 25)) * dt;
+    F.yaw += 0.006 * F.rpm * Math.min(F.v / 40, 1) * dt;
+
+    // rotate callout at Vr
+    if (F.v >= V_ROTATE && !F.rotateCalled) {
+      F.rotateCalled = true;
+      showMsg('Rotate! Pull back (Arrow Down)', 1.6);
+    }
+    // rotation -> liftoff (pull back on the stick)
+    if (keys.has('ArrowDown') && F.v > V_ROTATE) {
+      F.pitch = Math.min(F.pitch + 0.55 * dt, 0.22);
+      if (F.pitch > 0.12) {
+        F.mode = 'air';
+        showMsg('Positive climb — gear up (G)', 1.8);
+      }
+    } else {
+      F.pitch *= Math.max(0, 1 - dt * 4);
+    }
+    F.roll *= Math.max(0, 1 - dt * 4);
+    const f = fwdVec();
+    F.pos.x += f.x * F.v * dt;
+    F.pos.z += f.z * F.v * dt;
+    F.pos.y = terrainHeight(F.pos.x, F.pos.z) + GEAR_H;
+    F.vy = 0;
+  } else {
+    /* ----- airborne ----- */
+    F.v = Math.max(0, F.v + (thrust - drag - 9.8 * Math.sin(F.pitch)) * dt);
+
+    const authority = Math.min(1, F.v / 55 + 0.25);
+    const pitchIn = (keys.has('ArrowDown') ? 1 : 0) - (keys.has('ArrowUp') ? 1 : 0);   // stick: pull = climb
+    const rollIn = (keys.has('ArrowLeft') ? 1 : 0) - (keys.has('ArrowRight') ? 1 : 0); // roll > 0 = bank LEFT
+    F.pitch = THREE.MathUtils.clamp(F.pitch + pitchIn * 1.5 * authority * dt, -0.95, 0.95);
+
+    F.roll = THREE.MathUtils.clamp(F.roll + rollIn * 2.4 * authority * dt, -1.15, 1.15);
+    if (!rollIn) F.roll *= Math.max(0, 1 - dt * 0.6);       // gentle auto-level
+
+    // coordinated turn: bank left -> nose sweeps left (yaw increases)
+    const rudder = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0);
+    F.yaw += (12 * Math.tan(F.roll) / Math.max(F.v, 40) + rudder * 0.35) * dt;
+
+    // stall behavior — gentle near the ground so you can still flare
+    const lift = (F.v / V_STALL) * (F.v / V_STALL);
+    const agl = F.pos.y - terrainHeight(F.pos.x, F.pos.z);
+    F.stalling = lift < 1 && F.v > 1;
+    if (F.stalling) {
+      const noseDown = agl < 25 ? 0.12 : 0.55;
+      F.pitch = Math.max(F.pitch - noseDown * dt, -0.35);
+    }
+
+    const f = fwdVec();
+    F.pos.addScaledVector(f, F.v * dt);
+    if (lift < 1) {
+      // ground effect: the wing floats on a cushion of air near the surface
+      const ge = THREE.MathUtils.clamp(1 - agl / 18, 0, 1);
+      F.pos.y -= Math.min((1 - lift) * 9.8, 7) * (1 - ge * 0.75) * dt;
+    }
+    F.vy = (F.pos.y - prevY) / dt;
+
+    /* ----- touchdown / terrain strike ----- */
+    const gy = terrainHeight(F.pos.x, F.pos.z);
+    if (F.pos.y <= gy + GEAR_H) {
+      F.pos.y = gy + GEAR_H;
+      const f2 = fwdVec();
+      const ahead = terrainHeight(F.pos.x + f2.x * 12, F.pos.z + f2.z * 12);
+      const slope = Math.abs(ahead - gy) / 12;
+      const survivable = F.vy > -7 && F.pitch > -0.35 && slope < 0.3;
+      if (F.gearT < 0.6) {
+        crash('Belly landing! Gear was up');
+      } else if (slope >= 0.3) {
+        crash('Terrain strike');
+      } else if (Math.abs(F.roll) > 0.6) {
+        crash('Wing strike! Land wings-level');
+      } else if (survivable) {
+        F.mode = 'ground';
+        F.pitch = 0; F.roll = 0;
+        burst(F.pos, 14, 4, 0.85, 0.85, 0.85);
+        sLand();
+        showMsg(F.vy > -2 ? 'Butter smooth landing!' :
+                F.vy > -4 ? 'Touchdown — nice!' : 'Firm landing, but you walked away', 1.8);
+      } else {
+        crash('Hard impact');
+      }
+    }
+  }
+}
+
+/* =====================================================================
+   RING / BALLOON LOGIC
+===================================================================== */
+const prevPos = F.pos.clone();
+const tmpN = new THREE.Vector3(), tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
+
+function checkFlyThrough() {
+  if (F.mode === 'crashed') return;
+  for (const r of rings) {
+    r.getWorldDirection(tmpN);
+    tmpA.copy(prevPos).sub(r.position);
+    tmpB.copy(F.pos).sub(r.position);
+    const d0 = tmpA.dot(tmpN), d1 = tmpB.dot(tmpN);
+    if (d0 * d1 < 0) {
+      const t = d0 / (d0 - d1);
+      const cx = prevPos.x + (F.pos.x - prevPos.x) * t;
+      const cy = prevPos.y + (F.pos.y - prevPos.y) * t;
+      const cz = prevPos.z + (F.pos.z - prevPos.z) * t;
+      const dist = Math.hypot(cx - r.position.x, cy - r.position.y, cz - r.position.z);
+      if (dist < RING_R - 2) {
+        F.score.rings++;
+        burst(r.position, 40, 14, 0.2, 0.9, 1);
+        sRing();
+        showMsg('Ring! +1', 1.0);
+        r.rotation.y = Math.random() * Math.PI * 2;
+        placeAway(r, 400);
+      }
+    }
+  }
+  for (const b of balloons) {
+    if (!b.visible) {
+      b.userData.respawn -= 1;
+      if (b.userData.respawn <= 0) { placeAway(b, 350); b.visible = true; }
+      continue;
+    }
+    if (F.pos.distanceTo(b.position) < 10) {
+      b.visible = false;
+      b.userData.respawn = 180;
+      F.score.balloons++;
+      burst(b.position, 60, 16, 1, 0.45, 0.3);
+      sPop();
+      showMsg('Balloon popped! +1', 1.1);
+    }
+  }
+  document.getElementById('ringScore').textContent = F.score.rings;
+  document.getElementById('balScore').textContent = F.score.balloons;
+}
+
+/* =====================================================================
+   CAMERA
+===================================================================== */
+const camEuler = new THREE.Euler();
+const camQuat = new THREE.Quaternion();
+const camTargetPos = new THREE.Vector3();
+const camLook = new THREE.Vector3();
+const chasePos = new THREE.Vector3(0, 5, -475);
+
+function updateCamera(dt) {
+  camEuler.set(-F.pitch, F.yaw, -F.roll, 'YXZ');
+  camQuat.setFromEuler(camEuler);
+  if (F.camMode === 'chase') {
+    camTargetPos.set(0, 4.4, -14).applyQuaternion(camQuat).add(F.pos);
+    const s = 1 - Math.exp(-5 * dt);
+    chasePos.lerp(camTargetPos, s);
+    camera.position.copy(chasePos);
+    if (F.shake > 0) {
+      camera.position.x += (Math.random() - 0.5) * F.shake * 2;
+      camera.position.y += (Math.random() - 0.5) * F.shake * 2;
+    }
+    camLook.set(0, 1.2, 25).applyQuaternion(camQuat).add(F.pos);
+    camera.lookAt(camLook);
+  } else {
+    camera.position.set(0, 1.5, 2.4).applyQuaternion(camQuat).add(F.pos);
+    camLook.set(0, 1.2, 60).applyQuaternion(camQuat).add(F.pos);
+    camera.lookAt(camLook);
+  }
+  // keep camera above terrain
+  const camGround = terrainHeight(camera.position.x, camera.position.z) + 0.6;
+  if (camera.position.y < camGround) camera.position.y = camGround;
+}
+
+/* =====================================================================
+   HUD: instruments + attitude indicator
+===================================================================== */
+const att = document.getElementById('att').getContext('2d');
+function drawAttitude() {
+  const s = 150, c = att, cx = s / 2, cy = s / 2;
+  c.clearRect(0, 0, s, s);
+  c.save();
+  c.beginPath(); c.arc(cx, cy, s / 2 - 3, 0, Math.PI * 2); c.clip();
+  c.translate(cx, cy);
+  c.rotate(F.roll);   // bank left -> horizon tilts clockwise, like a real AI
+  const px = (F.pitch / (Math.PI / 2)) * s * 0.55;
+  c.translate(0, px);
+  c.fillStyle = '#3a86d8'; c.fillRect(-s * 2, -s * 2.4, s * 4, s * 2.4);
+  c.fillStyle = '#8a5a2a'; c.fillRect(-s * 2, 0, s * 4, s * 2.4);
+  c.fillStyle = '#fff'; c.fillRect(-s * 2, -1.5, s * 4, 3);
+  c.strokeStyle = '#fff'; c.lineWidth = 2;
+  for (const deg of [-30, -20, -10, 10, 20, 30]) {
+    const y = (deg / 90) * s * 0.55;
+    const w = deg % 20 === 0 ? 34 : 20;
+    c.beginPath(); c.moveTo(-w / 2, -y); c.lineTo(w / 2, -y); c.stroke();
+  }
+  c.restore();
+  // fixed aircraft symbol
+  c.strokeStyle = '#ffd76a'; c.lineWidth = 4; c.lineCap = 'round';
+  c.beginPath();
+  c.moveTo(cx - 34, cy); c.lineTo(cx - 10, cy); c.lineTo(cx, cy + 8); c.lineTo(cx + 10, cy); c.lineTo(cx + 34, cy);
+  c.stroke();
+  // bezel
+  c.strokeStyle = 'rgba(20,26,34,0.9)'; c.lineWidth = 6;
+  c.beginPath(); c.arc(cx, cy, s / 2 - 3, 0, Math.PI * 2); c.stroke();
+}
+
+const el = id => document.getElementById(id);
+function updateHUD() {
+  el('spd').textContent = Math.round(F.v * 1.944) + ' kt';
+  el('alt').textContent = Math.round(Math.max(0, F.pos.y - terrainHeight(F.pos.x, F.pos.z)) * 3.281) + ' ft';
+  el('vs').textContent = Math.round(F.vy * 196.85) + ' fpm';
+  el('thrFill').style.width = Math.round(F.throttle * 100) + '%';
+  const down = F.gearT > 0.6;
+  el('gearDot').style.background = down ? '#4ade80' : '#ff5252';
+  el('gearDot').style.color = down ? '#4ade80' : '#ff5252';
+  el('gearTxt').textContent = down ? 'GEAR DOWN' : 'GEAR UP';
+  // approach warnings
+  const aglNow = F.pos.y - terrainHeight(F.pos.x, F.pos.z);
+  let warn = '';
+  if (F.mode === 'air') {
+    if (F.stalling) warn = 'STALL';
+    else if (aglNow < 120 && F.vy < -8) warn = 'SINK RATE';
+    else if (aglNow < 60 && F.v < 60 && F.gearT < 0.6) warn = 'GEAR!';
+  }
+  el('warn').textContent = warn;
+  el('warn').style.display = warn ? 'block' : 'none';
+  drawAttitude();
+}
+
+/* =====================================================================
+   MAIN LOOP
+===================================================================== */
+const clock = new THREE.Clock();
+let firstFrame = true;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.033);
+  if (firstFrame) { firstFrame = false; bootDone(); }
+
+  prevPos.copy(F.pos);
+  stepFlight(dt);
+  checkFlyThrough();
+
+  // plane visuals
+  plane.visible = F.mode !== 'crashed';
+  plane.position.copy(F.pos);
+  camEuler.set(-F.pitch, F.yaw, -F.roll, 'YXZ');
+  plane.quaternion.setFromEuler(camEuler);
+  prop.rotation.z += (3 + F.throttle * 55) * dt;
+  propDisc.material.opacity = F.throttle * 0.16;
+  gear.position.y = (1 - F.gearT) * 1.35;
+  gear.visible = F.gearT > 0.04;
+  strobe.material.emissiveIntensity = (performance.now() % 1200 < 90) ? 4 : 0.15;
+  F.shake = Math.max(0, F.shake - dt * 1.6);
+
+  // world life
+  for (const c of clouds) {
+    c.position.x += c.userData.vx * dt;
+    if (c.position.x > 3800) c.position.x = -3800;
+  }
+  for (const r of rings) r.rotation.z += dt * 0.4;
+  updateParticles(dt);
+
+  // shadow camera follows the plane
+  sun.position.copy(F.pos).addScaledVector(SUN_DIR, 220);
+  sun.target.position.copy(F.pos);
+
+  // engine sound (follows spooled RPM)
+  if (eng) {
+    const rpm = 45 + F.rpm * 85 + F.v * 0.22;
+    eng.o1.frequency.value = rpm;
+    eng.o2.frequency.value = rpm * 1.98;
+    eng.g1.gain.value = 0.05 + F.rpm * 0.15;
+    eng.lp.frequency.value = 280 + F.rpm * 900 + F.v * 3;
+    eng.wg.gain.value = Math.min(0.3, (F.v / 165) * (F.v / 165) * 0.35);
+  }
+
+  sky.position.copy(camera.position);          // skybox follows
+  updateCamera(dt);
+  updateHUD();
+  composer.render();
+}
+
+bootLog('starting engine...');
+showMsg('Throttle up with W — pull back (Arrow Down) at 75 kt', 4);
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "lastAgent": "agent-c1952813-677f-4b1f-8410-6f769f9607f4",
+  "sessionsByServer": {
+    "local:C:\\Users\\ali\\.letta\\lc-local-backend": {
+      "agentId": "agent-local-080c54a2-5668-4806-b9ba-29c1f3e8bb80",
+      "conversationId": "default"
+    },
+    "api.letta.com": {
+      "agentId": "agent-c1952813-677f-4b1f-8410-6f769f9607f4",
+      "conversationId": "default"
+    }
+  },
+  "lastSession": {
+    "agentId": "agent-c1952813-677f-4b1f-8410-6f769f9607f4",
+    "conversationId": "default"
+  }
+}

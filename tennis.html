@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tennis 3D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #07090d;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  canvas { display: block; }
+
+  #scoreboard {
+    position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px;
+    background: rgba(10, 14, 20, 0.65); backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 14px;
+    padding: 10px 22px; color: #fff; font-size: 20px; z-index: 10;
+    user-select: none; white-space: nowrap;
+  }
+  #scoreboard .side { font-weight: 700; letter-spacing: 1px; font-size: 15px; color: #9fb4d8; }
+  #scoreboard .games { color: #ffd76a; font-weight: 700; }
+  #scoreboard .pts { min-width: 34px; text-align: center; font-weight: 600; }
+  #scoreboard .sep { color: #556; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #d4f542;
+    box-shadow: 0 0 8px #d4f542; display: inline-block; visibility: hidden; }
+  .dot.on { visibility: visible; }
+
+  #msg {
+    position: fixed; top: 34%; left: 50%; transform: translate(-50%, -50%);
+    color: #fff; font-size: 44px; font-weight: 800; letter-spacing: 1px;
+    text-shadow: 0 4px 24px rgba(0,0,0,0.7); opacity: 0; transition: opacity 0.25s;
+    z-index: 10; pointer-events: none; text-align: center; user-select: none;
+  }
+
+  #hint {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.55); font-size: 13px; z-index: 10;
+    background: rgba(10,14,20,0.5); padding: 8px 16px; border-radius: 10px;
+    user-select: none; white-space: nowrap;
+  }
+
+  #endOverlay {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    flex-direction: column; gap: 22px; background: rgba(5, 8, 12, 0.78);
+    backdrop-filter: blur(6px); z-index: 20;
+  }
+  #endOverlay h1 { color: #fff; font-size: 52px; font-weight: 800; }
+  #endOverlay button {
+    background: #d4f542; color: #111; border: none; border-radius: 12px;
+    font-size: 18px; font-weight: 700; padding: 14px 34px; cursor: pointer;
+    transition: transform 0.1s;
+  }
+  #endOverlay button:hover { transform: scale(1.05); }
+</style>
+</head>
+<body>
+
+<div id="scoreboard">
+  <span class="dot" id="serveYou"></span>
+  <span class="side">YOU</span>
+  <span class="games" id="gYou">0</span>
+  <span class="pts" id="pYou">0</span>
+  <span class="sep">–</span>
+  <span class="pts" id="pCpu">0</span>
+  <span class="games" id="gCpu">0</span>
+  <span class="side">CPU</span>
+  <span class="dot" id="serveCpu"></span>
+</div>
+<div id="msg"></div>
+<div id="hint">Move racket: Mouse or Arrow Keys / WASD &nbsp;•&nbsp; R: Restart &nbsp;•&nbsp; First to 3 games</div>
+<div id="endOverlay">
+  <h1 id="endText"></h1>
+  <button id="restartBtn">Play Again</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ============================== CONSTANTS ============================== */
+const BASELINE = 11.885;       // half court length
+const SINGLES_X = 4.115;       // singles sideline
+const DOUBLES_X = 5.485;       // doubles sideline
+const NET_H = 0.95;            // net height
+const BALL_R = 0.1;
+const RACKET_Z = 10.6;         // racket distance from net
+const HIT_R = 0.95;            // generous arcade hit radius
+const GRAV = 13;
+const REST = 0.78;             // bounce restitution
+const GAMES_TO_WIN = 3;
+
+/* ============================== RENDERER ============================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x07090d);
+scene.fog = new THREE.Fog(0x07090d, 30, 85);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 4.4, 15.8);
+
+/* ============================== LIGHTS ============================== */
+scene.add(new THREE.HemisphereLight(0x8fa8ff, 0x1d2b1a, 0.5));
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(10, 22, 8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -16; sun.shadow.camera.right = 16;
+sun.shadow.camera.top = 16; sun.shadow.camera.bottom = -16;
+sun.shadow.camera.near = 2; sun.shadow.camera.far = 50;
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+
+/* ============================== COURT TEXTURE ============================== */
+function makeCourtTexture() {
+  const W = 1024, H = 2048;               // canvas px (court plane 14m x 28m)
+  const cw = document.createElement('canvas');
+  cw.width = W; cw.height = H;
+  const g = cw.getContext('2d');
+  const mx = x => (x + 7) * (W / 14);     // meters -> px
+  const mz = z => (z + 14) * (H / 28);
+
+  g.fillStyle = '#2c6e49';                // outer green
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = '#2e5fc7';                // playing blue
+  g.fillRect(mx(-DOUBLES_X), mz(-BASELINE), mx(DOUBLES_X) - mx(-DOUBLES_X), mz(BASELINE) - mz(-BASELINE));
+
+  g.strokeStyle = '#ffffff';
+  g.lineCap = 'round';
+  const line = (x1, z1, x2, z2, w = 6) => {
+    g.lineWidth = w;
+    g.beginPath(); g.moveTo(mx(x1), mz(z1)); g.lineTo(mx(x2), mz(z2)); g.stroke();
+  };
+
+  line(-DOUBLES_X, -BASELINE, DOUBLES_X, -BASELINE, 9);   // baselines
+  line(-DOUBLES_X,  BASELINE, DOUBLES_X,  BASELINE, 9);
+  line(-DOUBLES_X, -BASELINE, -DOUBLES_X, BASELINE);      // doubles sidelines
+  line( DOUBLES_X, -BASELINE,  DOUBLES_X, BASELINE);
+  line(-SINGLES_X, -BASELINE, -SINGLES_X, BASELINE);      // singles sidelines
+  line( SINGLES_X, -BASELINE,  SINGLES_X, BASELINE);
+  line(-SINGLES_X, -6.4, SINGLES_X, -6.4);                // service lines
+  line(-SINGLES_X,  6.4, SINGLES_X,  6.4);
+  line(0, -6.4, 0, 6.4);                                  // center service line
+  line(0, -BASELINE, 0, -BASELINE + 0.35);                // center marks
+  line(0,  BASELINE, 0,  BASELINE - 0.35);
+
+  const tex = new THREE.CanvasTexture(cw);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+const court = new THREE.Mesh(
+  new THREE.PlaneGeometry(14, 28),
+  new THREE.MeshStandardMaterial({ map: makeCourtTexture(), roughness: 0.85 })
+);
+court.rotation.x = -Math.PI / 2;
+court.receiveShadow = true;
+scene.add(court);
+
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(70, 48),
+  new THREE.MeshStandardMaterial({ color: 0x0c0f14, roughness: 0.95 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -0.02;
+floor.receiveShadow = true;
+scene.add(floor);
+
+/* ============================== NET ============================== */
+function makeNetTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, 256, 64);
+  g.strokeStyle = 'rgba(230,230,230,0.9)';
+  g.lineWidth = 1;
+  for (let x = 0; x <= 256; x += 8) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, 64); g.stroke(); }
+  for (let y = 0; y <= 64; y += 8) { g.beginPath(); g.moveTo(0, y); g.lineTo(256, y); g.stroke(); }
+  g.fillStyle = '#f2f2f2';                                   // top tape
+  g.fillRect(0, 0, 256, 7);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const net = new THREE.Mesh(
+  new THREE.PlaneGeometry(DOUBLES_X * 2 + 1.8, NET_H),
+  new THREE.MeshStandardMaterial({ map: makeNetTexture(), transparent: true, side: THREE.DoubleSide, roughness: 0.9 })
+);
+net.position.set(0, NET_H / 2, 0);
+scene.add(net);
+[-1, 1].forEach(s => {
+  const post = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, NET_H + 0.15, 10),
+    new THREE.MeshStandardMaterial({ color: 0x333a44, roughness: 0.6 })
+  );
+  post.position.set(s * (DOUBLES_X + 0.9), (NET_H + 0.15) / 2, 0);
+  post.castShadow = true;
+  scene.add(post);
+});
+
+/* ============================== FLOODLIGHT POLES ============================== */
+[[-11, -14], [11, -14], [-11, 14], [11, 14]].forEach(([x, z]) => {
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.12, 9, 10),
+    new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.7 })
+  );
+  pole.position.set(x, 4.5, z);
+  scene.add(pole);
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(1.7, 0.45, 0.25),
+    new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xffffff, emissiveIntensity: 2.4 })
+  );
+  head.position.set(x, 9.1, z);
+  head.lookAt(0, 0, 0);
+  scene.add(head);
+});
+
+/* ============================== RACKETS ============================== */
+function makeRacket(accent) {
+  const group = new THREE.Group();
+  const frame = new THREE.Mesh(
+    new THREE.TorusGeometry(0.34, 0.028, 12, 40),
+    new THREE.MeshStandardMaterial({ color: accent, roughness: 0.35, metalness: 0.4 })
+  );
+  frame.scale.set(1, 1.28, 1);
+  frame.castShadow = true;
+  group.add(frame);
+
+  // strings
+  const pts = [];
+  const rx = 0.32, ry = 0.32 * 1.28;
+  for (let x = -0.27; x <= 0.271; x += 0.0675) {
+    const yh = ry * Math.sqrt(Math.max(0, 1 - (x / rx) ** 2));
+    pts.push(x, -yh, 0, x, yh, 0);
+  }
+  for (let y = -0.36; y <= 0.361; y += 0.086) {
+    const xh = rx * Math.sqrt(Math.max(0, 1 - (y / ry) ** 2));
+    pts.push(-xh, y, 0, xh, y, 0);
+  }
+  const sGeo = new THREE.BufferGeometry();
+  sGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  group.add(new THREE.LineSegments(sGeo,
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45 })));
+
+  const throat = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.03, 0.16, 8),
+    new THREE.MeshStandardMaterial({ color: accent, roughness: 0.4, metalness: 0.3 })
+  );
+  throat.position.y = -ry - 0.07;
+  group.add(throat);
+
+  const handle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.034, 0.04, 0.44, 10),
+    new THREE.MeshStandardMaterial({ color: 0x1c1c22, roughness: 0.8 })
+  );
+  handle.position.y = -ry - 0.16 - 0.2;
+  handle.castShadow = true;
+  group.add(handle);
+  return group;
+}
+
+const playerRacket = makeRacket(0x3b82f6);
+const aiRacket = makeRacket(0xef4444);
+playerRacket.position.set(0, 1.1, RACKET_Z);
+aiRacket.position.set(0, 1.1, -RACKET_Z);
+aiRacket.rotation.y = Math.PI;
+scene.add(playerRacket, aiRacket);
+let playerSwing = 0, aiSwing = 0;
+
+/* ============================== BALL ============================== */
+const ball = new THREE.Mesh(
+  new THREE.SphereGeometry(BALL_R, 20, 16),
+  new THREE.MeshStandardMaterial({ color: 0xd4f542, emissive: 0xd4f542, emissiveIntensity: 1.0, roughness: 0.4 })
+);
+ball.castShadow = true;
+scene.add(ball);
+
+// motion trail
+const TRAIL_N = 34;
+const trailPos = new Float32Array(TRAIL_N * 3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+  color: 0xd4f542, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending
+}));
+trail.frustumCulled = false;
+scene.add(trail);
+let trailPoints = [];
+
+/* ============================== PARTICLES ============================== */
+const MAX_P = 260;
+const pGeo = new THREE.BufferGeometry();
+const pPos = new Float32Array(MAX_P * 3).fill(-999);
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+const pVel = new Float32Array(MAX_P * 3);
+const pLife = new Float32Array(MAX_P).fill(0);
+let pNext = 0;
+const particles = new THREE.Points(pGeo, new THREE.PointsMaterial({
+  color: 0xffe98a, size: 0.09, transparent: true, opacity: 0.9,
+  blending: THREE.AdditiveBlending, depthWrite: false
+}));
+particles.frustumCulled = false;
+scene.add(particles);
+
+function burst(x, y, z, n, speed) {
+  for (let i = 0; i < n; i++) {
+    const k = pNext; pNext = (pNext + 1) % MAX_P;
+    pPos[k * 3] = x; pPos[k * 3 + 1] = y; pPos[k * 3 + 2] = z;
+    const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
+    const s = speed * (0.4 + Math.random() * 0.6);
+    pVel[k * 3] = Math.sin(ph) * Math.cos(th) * s;
+    pVel[k * 3 + 1] = Math.abs(Math.cos(ph)) * s;
+    pVel[k * 3 + 2] = Math.sin(ph) * Math.sin(th) * s;
+    pLife[k] = 1;
+  }
+}
+function updateParticles(dt) {
+  for (let k = 0; k < MAX_P; k++) {
+    if (pLife[k] <= 0) continue;
+    pLife[k] -= dt * 1.7;
+    if (pLife[k] <= 0) { pPos[k * 3 + 1] = -999; continue; }
+    pVel[k * 3 + 1] -= 9 * dt;
+    pPos[k * 3] += pVel[k * 3] * dt;
+    pPos[k * 3 + 1] += pVel[k * 3 + 1] * dt;
+    pPos[k * 3 + 2] += pVel[k * 3 + 2] * dt;
+  }
+  pGeo.attributes.position.needsUpdate = true;
+}
+
+/* ============================== AUDIO ============================== */
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+addEventListener('pointerdown', initAudio, { once: false });
+addEventListener('keydown', initAudio, { once: false });
+
+function blip(freq, dur, type = 'sine', gain = 0.15) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(gain, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  o.connect(g).connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + dur);
+}
+const sHit = () => blip(210 + Math.random() * 60, 0.09, 'square', 0.14);
+const sBounce = () => blip(130, 0.07, 'sine', 0.1);
+const sScore = () => { blip(520, 0.12, 'triangle', 0.14); setTimeout(() => blip(720, 0.18, 'triangle', 0.14), 110); };
+const sFault = () => blip(85, 0.22, 'sawtooth', 0.1);
+
+/* ============================== GAME STATE ============================== */
+const POINT_NAMES = ['0', '15', '30', '40'];
+const state = {
+  mode: 'serve',            // serve | play | point | match
+  server: 'you',
+  timer: 1.4,
+  rally: 0,
+  you: { points: 0, games: 0 },
+  ai: { points: 0, games: 0 },
+};
+let vel = new THREE.Vector3();
+let lastHitter = null;
+let lastBounceSide = null;
+let bounces = 0;
+let hitCooldown = { you: 0, ai: 0 };
+const playerPos = new THREE.Vector3(0, 1.1, RACKET_Z);
+const aiPos = new THREE.Vector3(0, 1.1, -RACKET_Z);
+let aiError = 0;
+
+const msgEl = document.getElementById('msg');
+let msgTimeout = null;
+function showMsg(text, hold = 1.3) {
+  msgEl.textContent = text;
+  msgEl.style.opacity = 1;
+  clearTimeout(msgTimeout);
+  msgTimeout = setTimeout(() => msgEl.style.opacity = 0, hold * 1000);
+}
+
+function updateScoreboard() {
+  const fmt = (p, o) => {
+    if (p >= 3 && o >= 3) {
+      if (p === o) return '40';
+      return p > o ? 'Ad' : '40';
+    }
+    return POINT_NAMES[Math.min(p, 3)];
+  };
+  document.getElementById('pYou').textContent = fmt(state.you.points, state.ai.points);
+  document.getElementById('pCpu').textContent = fmt(state.ai.points, state.you.points);
+  document.getElementById('gYou').textContent = state.you.games;
+  document.getElementById('gCpu').textContent = state.ai.games;
+  document.getElementById('serveYou').classList.toggle('on', state.server === 'you');
+  document.getElementById('serveCpu').classList.toggle('on', state.server === 'ai');
+}
+
+/* ============================== FLOW ============================== */
+function setupServe() {
+  state.mode = 'serve';
+  state.timer = 1.3;
+  state.rally = 0;
+  bounces = 0; lastBounceSide = null; lastHitter = null;
+  trailPoints = [];
+  updateScoreboard();
+}
+
+function launchServe() {
+  const dir = state.server === 'you' ? -1 : 1;
+  const rp = state.server === 'you' ? playerPos : aiPos;
+  ball.position.set(rp.x, rp.y + 0.35, rp.z + dir * 0.3);
+  vel.set(-rp.x * 0.22, 5.4, 13.5 * dir);
+  lastHitter = state.server;
+  state.mode = 'play';
+  sHit();
+  if (state.server === 'you') playerSwing = 1; else aiSwing = 1;
+  burst(ball.position.x, ball.position.y, ball.position.z, 14, 3);
+}
+
+function awardPoint(winner, reason) {
+  const w = state[winner];
+  w.points++;
+  sScore();
+  const name = winner === 'you' ? 'You' : 'CPU';
+  state.server = winner === 'you' ? 'ai' : 'you';   // loser serves next
+
+  // game won?
+  const l = state[winner === 'you' ? 'ai' : 'you'];
+  if (w.points >= 4 && w.points - l.points >= 2) {
+    w.games++;
+    state.you.points = 0; state.ai.points = 0;
+    if (w.games >= GAMES_TO_WIN && w.games - l.games >= 2) {
+      endMatch(winner);
+      return;
+    }
+    showMsg(`Game ${name}!`, 1.8);
+    state.timer = 2.0;
+  } else {
+    showMsg(reason ? `${reason} — Point ${name}!` : `Point ${name}!`, 1.3);
+    state.timer = 1.6;
+  }
+  state.mode = 'point';
+  updateScoreboard();
+}
+
+function endMatch(winner) {
+  state.mode = 'match';
+  document.getElementById('endText').textContent =
+    winner === 'you' ? '🏆 You win the match!' : 'CPU wins the match';
+  document.getElementById('endOverlay').style.display = 'flex';
+  sScore();
+}
+
+function restartMatch() {
+  state.you = { points: 0, games: 0 };
+  state.ai = { points: 0, games: 0 };
+  state.server = 'you';
+  document.getElementById('endOverlay').style.display = 'none';
+  setupServe();
+  showMsg('Play!', 0.9);
+}
+document.getElementById('restartBtn').addEventListener('click', restartMatch);
+
+/* ============================== INPUT ============================== */
+const keys = new Set();
+addEventListener('keydown', e => {
+  keys.add(e.key.toLowerCase());
+  if (e.key.toLowerCase() === 'r') restartMatch();
+});
+addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+
+function pointerToCourt(cx, cy) {
+  const nx = (cx / innerWidth) * 2 - 1;
+  const ny = 1 - cy / innerHeight;
+  playerPos.x = THREE.MathUtils.clamp(nx * 6.0, -5.1, 5.1);
+  playerPos.y = THREE.MathUtils.clamp(0.35 + ny * 2.6, 0.35, 2.75);
+}
+addEventListener('mousemove', e => pointerToCourt(e.clientX, e.clientY));
+addEventListener('touchmove', e => {
+  e.preventDefault();
+  pointerToCourt(e.touches[0].clientX, e.touches[0].clientY);
+}, { passive: false });
+
+/* ============================== HITS ============================== */
+function doHit(side) {
+  const isYou = side === 'you';
+  const rp = isYou ? playerPos : aiPos;
+  state.rally++;
+  lastHitter = side;
+  bounces = 0; lastBounceSide = null;
+  hitCooldown[side] = 0.28;
+
+  const offset = THREE.MathUtils.clamp((ball.position.x - rp.x) / HIT_R, -1, 1);
+  let vx, speed;
+
+  if (isYou) {
+    speed = Math.min(15 + state.rally * 0.5, 21);
+    vx = offset * 6.5;
+  } else {
+    speed = Math.min(14 + state.rally * 0.45, 20);
+    const aimX = (Math.random() * 8 - 4);                  // target in your court
+    vx = THREE.MathUtils.clamp((aimX - ball.position.x) * 0.32, -5.5, 5.5);
+  }
+  vel.set(vx, 5.8, isYou ? -speed : speed);
+  ball.position.z = rp.z + (isYou ? -0.15 : 0.15);
+
+  if (isYou) playerSwing = 1; else aiSwing = 1;
+  sHit();
+  burst(ball.position.x, ball.position.y, ball.position.z, 18, 4);
+}
+
+/* ============================== PHYSICS ============================== */
+function stepPlay(dt) {
+  const prev = ball.position.clone();
+  vel.y -= GRAV * dt;
+  ball.position.addScaledVector(vel, dt);
+  ball.rotation.x += vel.z * dt * 2;
+
+  hitCooldown.you = Math.max(0, hitCooldown.you - dt);
+  hitCooldown.ai = Math.max(0, hitCooldown.ai - dt);
+
+  // --- racket hits (plane crossing) ---
+  for (const side of ['you', 'ai']) {
+    const rp = side === 'you' ? playerPos : aiPos;
+    const movingToward = side === 'you' ? vel.z > 0 : vel.z < 0;
+    if (hitCooldown[side] <= 0 && movingToward &&
+        (prev.z - rp.z) * (ball.position.z - rp.z) <= 0) {
+      const t = Math.abs(prev.z - rp.z) / Math.max(0.0001, Math.abs(ball.position.z - prev.z));
+      const hx = prev.x + (ball.position.x - prev.x) * t;
+      const hy = prev.y + (ball.position.y - prev.y) * t;
+      if (Math.hypot(hx - rp.x, hy - rp.y) < HIT_R) doHit(side);
+    }
+  }
+
+  // --- net ---
+  if ((prev.z) * (ball.position.z) < 0) {
+    const t = Math.abs(prev.z) / Math.max(0.0001, Math.abs(ball.position.z - prev.z));
+    const yAtNet = prev.y + (ball.position.y - prev.y) * t;
+    if (yAtNet < NET_H + BALL_R * 0.4) {
+      burst(ball.position.x, Math.min(yAtNet, NET_H), 0, 16, 2.5);
+      sFault();
+      awardPoint(lastHitter === 'you' ? 'ai' : 'you', 'Net');
+      return;
+    }
+    bounces = 0; lastBounceSide = null;      // crossed safely
+  }
+
+  // --- ground bounce ---
+  if (ball.position.y <= BALL_R && vel.y < 0) {
+    ball.position.y = BALL_R;
+    vel.y = -vel.y * REST;
+    vel.x *= 0.985; vel.z *= 0.985;
+    const inX = Math.abs(ball.position.x) <= SINGLES_X + BALL_R;
+    const inZ = Math.abs(ball.position.z) <= BASELINE + BALL_R;
+    const side = ball.position.z > 0 ? 'you' : 'ai';
+    sBounce();
+    burst(ball.position.x, BALL_R, ball.position.z, 8, 1.8);
+
+    if (!inX || !inZ) {                       // landed out
+      awardPoint(lastHitter === 'you' ? 'ai' : 'you', 'Out');
+      return;
+    }
+    if (side === lastHitter) {                // bounced on hitter's own side
+      awardPoint(lastHitter === 'you' ? 'ai' : 'you', 'Fault');
+      return;
+    }
+    if (lastBounceSide === side) bounces++; else { bounces = 1; lastBounceSide = side; }
+    if (bounces >= 2) {                       // double bounce
+      awardPoint(side === 'you' ? 'ai' : 'you', 'Double bounce');
+      return;
+    }
+  }
+
+  // --- flew out of the arena ---
+  if (Math.abs(ball.position.z) > 15 || Math.abs(ball.position.x) > 9.5 || ball.position.y < -3) {
+    awardPoint(lastHitter === 'you' ? 'ai' : 'you', 'Out');
+    return;
+  }
+
+  // trail
+  trailPoints.push(ball.position.clone());
+  if (trailPoints.length > TRAIL_N) trailPoints.shift();
+}
+
+/* ============================== AI ============================== */
+function updateAI(dt) {
+  const maxSpeed = 8.4;
+  let tx = 0, ty = 1.1;
+  if (state.mode === 'play' && vel.z < 0 && ball.position.z < 2) {
+    const t = Math.max(0, (ball.position.z - aiPos.z) / Math.min(vel.z, -0.001) * -1);
+    tx = THREE.MathUtils.clamp(ball.position.x + vel.x * t * 0.9 + aiError, -4.9, 4.9);
+    ty = THREE.MathUtils.clamp(ball.position.y + vel.y * t * 0.4, 0.45, 2.5);
+  }
+  const dx = tx - aiPos.x, dy = ty - aiPos.y;
+  const d = Math.hypot(dx, dy);
+  if (d > 0.01) {
+    const step = Math.min(d, maxSpeed * dt);
+    aiPos.x += dx / d * step;
+    aiPos.y += dy / d * step;
+  }
+}
+
+/* ============================== MAIN LOOP ============================== */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.033);
+
+  // keyboard movement
+  const kSpeed = 8.5 * dt;
+  if (keys.has('arrowleft') || keys.has('a')) playerPos.x -= kSpeed;
+  if (keys.has('arrowright') || keys.has('d')) playerPos.x += kSpeed;
+  if (keys.has('arrowup') || keys.has('w')) playerPos.y += kSpeed * 0.6;
+  if (keys.has('arrowdown') || keys.has('s')) playerPos.y -= kSpeed * 0.6;
+  playerPos.x = THREE.MathUtils.clamp(playerPos.x, -5.1, 5.1);
+  playerPos.y = THREE.MathUtils.clamp(playerPos.y, 0.35, 2.75);
+
+  updateAI(dt);
+
+  // racket swing animation
+  playerSwing = Math.max(0, playerSwing - dt * 5);
+  aiSwing = Math.max(0, aiSwing - dt * 5);
+  playerRacket.position.copy(playerPos);
+  playerRacket.rotation.x = -playerSwing * 0.8;
+  aiRacket.position.copy(aiPos);
+  aiRacket.rotation.x = aiSwing * 0.8;
+
+  // state machine
+  if (state.mode === 'serve') {
+    const rp = state.server === 'you' ? playerPos : aiPos;
+    const dir = state.server === 'you' ? -1 : 1;
+    ball.position.set(rp.x, rp.y + 0.35, rp.z + dir * 0.3);
+    state.timer -= dt;
+    if (state.timer <= 0) { aiError = (Math.random() - 0.5) * 0.7; launchServe(); }
+  } else if (state.mode === 'play') {
+    stepPlay(dt);
+  } else if (state.mode === 'point') {
+    state.timer -= dt;
+    if (state.timer <= 0) setupServe();
+  }
+
+  // trail update
+  for (let i = 0; i < TRAIL_N; i++) {
+    const p = trailPoints[Math.min(i, Math.max(0, trailPoints.length - 1))] || ball.position;
+    trailPos[i * 3] = p.x; trailPos[i * 3 + 1] = p.y; trailPos[i * 3 + 2] = p.z;
+  }
+  trailGeo.attributes.position.needsUpdate = true;
+
+  updateParticles(dt);
+
+  // camera follows ball slightly
+  camera.position.x += (ball.position.x * 0.28 - camera.position.x) * 0.06;
+  camera.lookAt(ball.position.x * 0.15, 1.2, -2);
+
+  composer.render();
+}
+
+/* ============================== POST-PROCESSING ============================== */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.55, 0.8);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+});
+
+/* ============================== START ============================== */
+setupServe();
+showMsg('Get ready!', 1.1);
+animate();
+</script>
+</body>
+</html>
