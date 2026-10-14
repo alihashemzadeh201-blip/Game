@@ -53,6 +53,18 @@
     color: #9fb0c3; font-size: 15px; z-index: 50; letter-spacing: 1px;
     text-shadow: 0 2px 8px #000;
   }
+  /* gunsight */
+  #sight {
+    position: fixed; left: 50%; top: 50%; width: 46px; height: 46px;
+    transform: translate(-50%, -50%); border: 2px solid rgba(140,255,180,0.5);
+    border-radius: 50%; z-index: 9; pointer-events: none;
+    transition: border-color 0.08s;
+  }
+  #sight::before {
+    content: ''; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px;
+    margin: -2px; background: rgba(140,255,180,0.85); border-radius: 50%;
+  }
+  #sight.hot { border-color: rgba(255,120,80,0.95); box-shadow: 0 0 14px rgba(255,120,80,0.55); }
   #err {
     position: fixed; top: 38%; left: 50%; transform: translate(-50%, 0);
     max-width: 84%; color: #ff6b6b; background: rgba(20, 8, 8, 0.9);
@@ -64,9 +76,10 @@
 </head>
 <body>
 
-<div id="score" class="panel">RINGS <b id="ringScore">0</b> &nbsp;•&nbsp; BALLOONS <b id="balScore">0</b></div>
+<div id="score" class="panel">RINGS <b id="ringScore">0</b> &nbsp;•&nbsp; BALLOONS <b id="balScore">0</b> &nbsp;•&nbsp; KILLS <b id="killScore">0</b></div>
 <div id="msg"></div>
 <div id="warn">STALL</div>
+<div id="sight"></div>
 
 <div id="instruments" class="panel">
   <div>SPD <span class="val" id="spd">0 kt</span></div>
@@ -81,7 +94,7 @@
 
 <div id="hint" class="panel">
   <b>W/S</b> throttle &nbsp; <b>Arrows</b> stick (pull <b>Down</b> to climb) &nbsp; <b>A/D</b> rudder &nbsp;
-  <b>G</b> gear &nbsp; <b>Space</b> brake &nbsp; <b>C</b> camera &nbsp; <b>R</b> reset
+  <b>G</b> gear &nbsp; <b>F</b> fire &nbsp; <b>Mouse</b> look &nbsp; <b>Space</b> brake &nbsp; <b>C</b> camera &nbsp; <b>R</b> reset
 </div>
 
 <div id="boot">booting flight simulator...</div>
@@ -395,7 +408,7 @@ const ISLANDS = [
   { x: 3400,  z: -600,  r: 300,  base: 13, hill: 9,  peak: 0 },     // sandbar
 ];
 
-function terrainHeight(x, z) {
+function terrainBase(x, z) {
   let h = -14 + 6 * fbm(x * 0.0009 + 7.3, z * 0.0009 + 2.1, 3);     // sea floor
   for (const isl of ISLANDS) {
     const dx = x - isl.x, dz = z - isl.z;
@@ -409,6 +422,58 @@ function terrainHeight(x, z) {
   const d = Math.hypot(x, z);
   const flat = smoothstep(650, 1500, d);        // airport area (incl. full runway) is flat
   return h * flat + 9 * (1 - flat);             // airport sits on a 9 m green plateau
+}
+
+/* --- rivers: meandering channels carved from the highlands to the sea --- */
+const RIVERS = [];
+function genRiver(sx, sz, dx, dz, step, steps, width) {
+  const pts = [];
+  let x = sx, z = sz;
+  const l0 = Math.hypot(dx, dz); dx /= l0; dz /= l0;
+  for (let k = 0; k < steps; k++) {
+    pts.push([x, z]);
+    if (terrainBase(x, z) < -4.5) break;                       // reached the sea
+    const wob = Math.sin(k * 0.55 + sx * 0.01) * 0.9 + Math.sin(k * 0.23 + sz * 0.013) * 0.6;
+    let mx = dx + (-dz) * wob * 0.75, mz = dz + dx * wob * 0.75;
+    if (Math.hypot(x, z) < 950) { mx += x * 0.002; mz += z * 0.002; }   // steer away from the airport
+    const l = Math.hypot(mx, mz); mx /= l; mz /= l;
+    x += mx * step; z += mz * step;
+  }
+  const riv = { pts, width };
+  riv.minX = Math.min(...pts.map(p => p[0])) - width * 2.4;
+  riv.maxX = Math.max(...pts.map(p => p[0])) + width * 2.4;
+  riv.minZ = Math.min(...pts.map(p => p[1])) - width * 2.4;
+  riv.maxZ = Math.max(...pts.map(p => p[1])) + width * 2.4;
+  RIVERS.push(riv);
+  return riv;
+}
+genRiver(820, 760, 0.55, 0.83, 62, 46, 12);      // main island -> NE coast
+genRiver(3560, 2560, 0.94, 0.34, 66, 30, 10);    // volcano -> E coast
+
+function segDist(px, pz, ax, az, bx, bz) {
+  const abx = bx - ax, abz = bz - az;
+  const t = clamp01(((px - ax) * abx + (pz - az) * abz) / (abx * abx + abz * abz));
+  return Math.hypot(px - (ax + abx * t), pz - (az + abz * t));
+}
+function riverCarve(x, z) {
+  let c = 0;
+  for (const riv of RIVERS) {
+    if (x < riv.minX || x > riv.maxX || z < riv.minZ || z > riv.maxZ) continue;
+    for (let i = 0; i < riv.pts.length - 1; i++) {
+      const d = segDist(x, z, riv.pts[i][0], riv.pts[i][1], riv.pts[i + 1][0], riv.pts[i + 1][1]);
+      const k = smoothstep(riv.width * 1.8, riv.width * 0.55, d);
+      if (k > c) c = k;
+    }
+  }
+  return c;
+}
+function terrainHeight(x, z) {
+  const b = terrainBase(x, z);
+  if (b < -4.5) return b;                                      // open sea: no carving
+  const c = riverCarve(x, z);
+  if (c <= 0) return b;
+  const airfield = smoothstep(700, 950, Math.hypot(x, z));     // never touch the plateau
+  return Math.max(b - c * 3.4 * airfield, -3.8);
 }
 
 const terGeo = new THREE.PlaneGeometry(10000, 10000, 288, 288);
@@ -458,7 +523,8 @@ const water = new THREE.Mesh(
   new THREE.MeshPhongMaterial({
     color: 0x14607a, specular: 0x7a5a35, shininess: 300,
     normalMap: rippleA, normalScale: new THREE.Vector2(0.65, 0.65),
-    transparent: true, opacity: 0.97
+    transparent: true, opacity: 0.97,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4   // kills beach z-fighting
   })
 );
 water.rotation.x = -Math.PI / 2;
@@ -469,12 +535,46 @@ const water2 = new THREE.Mesh(
   new THREE.MeshPhongMaterial({
     color: 0x1a6a84, specular: 0x8a6a40, shininess: 420,
     normalMap: rippleB, normalScale: new THREE.Vector2(0.4, 0.4),
-    transparent: true, opacity: 0.35, depthWrite: false
+    transparent: true, opacity: 0.35, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6
   })
 );
 water2.rotation.x = -Math.PI / 2;
 water2.position.y = -5.82;
 scene.add(water2);
+
+/* --- river water ribbons hugging the carved channels --- */
+function buildRiverMesh(riv) {
+  const n = riv.pts.length;
+  const pos = new Float32Array(n * 6);
+  const uv = new Float32Array(n * 4);
+  const idx = [];
+  for (let i = 0; i < n; i++) {
+    const [x, z] = riv.pts[i];
+    const [px, pz] = riv.pts[Math.max(0, i - 1)];
+    const [nx, nz] = riv.pts[Math.min(n - 1, i + 1)];
+    let tx = nx - px, tz = nz - pz;
+    const l = Math.hypot(tx, tz) || 1; tx /= l; tz /= l;
+    const ox = -tz * riv.width * 0.46, oz = tx * riv.width * 0.46;   // strip half-width
+    const y = terrainHeight(x, z) + 0.35;
+    pos.set([x - ox, y, z - oz, x + ox, y, z + oz], i * 6);
+    uv.set([0, i * 0.4, 1, i * 0.4], i * 4);
+    if (i < n - 1) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, new THREE.MeshPhongMaterial({
+    color: 0x2a86a8, specular: 0x8a6a40, shininess: 260,
+    normalMap: rippleB, normalScale: new THREE.Vector2(0.5, 0.5),
+    transparent: true, opacity: 0.9
+  }));
+  m.receiveShadow = true;
+  scene.add(m);
+}
+RIVERS.forEach(buildRiverMesh);
 
 /* --- palm trees (instanced trunk + crown) --- */
 {
@@ -498,13 +598,14 @@ scene.add(water2);
 
   const spots = [];
   let guard = 0;
-  while (spots.length < 420 && guard++ < 7000) {
+  while (spots.length < 650 && guard++ < 10500) {
     const x = rand(-3600, 3600), z = rand(-3600, 3600);
     const h = terrainHeight(x, z);
     if (h < 2 || h > 70) continue;
     const sl = Math.abs(terrainHeight(x + 6, z) - h) / 6 + Math.abs(terrainHeight(x, z + 6) - h) / 6;
     if (sl > 0.5) continue;
     if (Math.hypot(x, z) < 820) continue;                            // keep the airport plateau clear
+    if (riverCarve(x, z) > 0.25) continue;                           // not in the rivers
     spots.push([x, h, z]);
   }
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, spots.length);
@@ -520,6 +621,46 @@ scene.add(water2);
   });
   trunks.castShadow = true; crowns.castShadow = true;
   scene.add(trunks, crowns);
+}
+
+/* --- inland pine forests (taller, darker, higher ground) --- */
+{
+  const pineTrunk = new THREE.CylinderGeometry(0.22, 0.34, 4.2, 6);
+  pineTrunk.translate(0, 2.1, 0);
+  const coneParts = [];
+  for (const [r, hgt, y] of [[2.2, 3.6, 4.6], [1.7, 3.0, 6.6], [1.15, 2.4, 8.4]]) {
+    const cg = new THREE.ConeGeometry(r, hgt, 8);
+    cg.translate(0, y, 0);
+    coneParts.push(cg);
+  }
+  const pineCrown = mergeGeometries(coneParts);
+  const ptMat = new THREE.MeshStandardMaterial({ color: 0x6a4a30, roughness: 1 });
+  const pcMat = new THREE.MeshStandardMaterial({ color: 0x1e4630, roughness: 0.95 });
+  const spots = [];
+  let guard = 0;
+  while (spots.length < 400 && guard++ < 10000) {
+    const x = rand(-3600, 3600), z = rand(-3600, 3600);
+    const h = terrainHeight(x, z);
+    if (h < 22 || h > 210) continue;
+    const sl = Math.abs(terrainHeight(x + 7, z) - h) / 7 + Math.abs(terrainHeight(x, z + 7) - h) / 7;
+    if (sl > 0.55) continue;
+    if (Math.hypot(x, z) < 950) continue;
+    if (riverCarve(x, z) > 0.25) continue;
+    spots.push([x, h, z]);
+  }
+  const ptrunks = new THREE.InstancedMesh(pineTrunk, ptMat, spots.length);
+  const pcrowns = new THREE.InstancedMesh(pineCrown, pcMat, spots.length);
+  const pdummy = new THREE.Object3D();
+  spots.forEach(([x, h, z], i) => {
+    pdummy.position.set(x, h - 0.3, z);
+    pdummy.rotation.set(rand(-0.05, 0.05), rand(0, Math.PI * 2), rand(-0.05, 0.05));
+    pdummy.scale.setScalar(rand(0.8, 1.6));
+    pdummy.updateMatrix();
+    ptrunks.setMatrixAt(i, pdummy.matrix);
+    pcrowns.setMatrixAt(i, pdummy.matrix);
+  });
+  ptrunks.castShadow = true; pcrowns.castShadow = true;
+  scene.add(ptrunks, pcrowns);
 }
 
 /* --- lighthouse on the western sandbar --- */
@@ -546,6 +687,56 @@ scene.add(water2);
   lh.traverse(o => { if (o.isMesh) o.castShadow = true; });
   scene.add(lh);
 }
+
+/* --- coastal towns: lit windows glow in the dusk --- */
+function facadeTextures(base) {
+  const litCells = [];
+  for (let r = 0; r < 14; r++) for (let c = 0; c < 6; c++) litCells.push(Math.random() < 0.4);
+  const draw = (g, w, h, litOnly) => {
+    g.fillStyle = litOnly ? '#000' : base; g.fillRect(0, 0, w, h);
+    if (!litOnly) for (let i = 0; i < 700; i++) {
+      g.fillStyle = 'rgba(0,0,0,0.07)';
+      g.fillRect(Math.random() * w, Math.random() * h, 2, 2);
+    }
+    litCells.forEach((lit, i) => {
+      if (litOnly && !lit) return;
+      const r = (i / 6) | 0, c = i % 6;
+      g.fillStyle = litOnly ? '#ffb864' : (lit ? '#ffdba6' : '#232c38');
+      g.fillRect(8 + c * 20, 10 + r * 17.5, 12, 10);
+    });
+  };
+  return { map: canvasTexture(128, 256, (g, w, h) => draw(g, w, h, false)),
+           emi: canvasTexture(128, 256, (g, w, h) => draw(g, w, h, true)) };
+}
+const facadeA = facadeTextures('#6a7280'), facadeB = facadeTextures('#8a7a66');
+function town(cx0, cz0, count) {
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0x2e3440, roughness: 0.9 });
+  let placedN = 0, guard = 0;
+  while (placedN < count && guard++ < count * 30) {
+    const x = cx0 + rand(-170, 170), z = cz0 + rand(-170, 170);
+    const h = terrainHeight(x, z);
+    if (h < 3 || h > 70) continue;
+    const sl = Math.abs(terrainHeight(x + 7, z) - h) / 7 + Math.abs(terrainHeight(x, z + 7) - h) / 7;
+    if (sl > 0.4) continue;
+    if (Math.hypot(x, z) < 950) continue;                 // keep the airport clear
+    if (riverCarve(x, z) > 0.2) continue;                 // not in the rivers
+    const w = rand(9, 17), d = rand(9, 17), bh = rand(8, 40);
+    const f = Math.random() < 0.5 ? facadeA : facadeB;
+    const bld = new THREE.Mesh(new THREE.BoxGeometry(w, bh, d),
+      new THREE.MeshStandardMaterial({ map: f.map, emissiveMap: f.emi, emissive: 0xffc07a, emissiveIntensity: 1.1, roughness: 0.85 }));
+    bld.position.set(x, h + bh / 2 - 0.5, z);
+    bld.rotation.y = rand(0, Math.PI);
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.7, d + 0.8), roofMat);
+    roof.position.y = bh / 2 + 0.3;
+    bld.add(roof);
+    bld.castShadow = true; bld.receiveShadow = true; roof.castShadow = true;
+    scene.add(bld);
+    placedN++;
+  }
+}
+town(1500, 1250, 34);        // main island coastal town
+town(-3250, 1750, 12);       // west island village
+town(2650, -2550, 10);       // SE island village
 
 /* =====================================================================
    AIRPORT: runway, lights, hangars, tower
@@ -817,6 +1008,153 @@ const balloons = [];
 }
 
 /* =====================================================================
+   GUNS + ENEMY BANDITS
+===================================================================== */
+const sightEl = document.getElementById('sight');
+const tmpV = new THREE.Vector3();
+
+/* tracer bullets (pooled) */
+const bullets = [];
+{
+  const bGeo = new THREE.BoxGeometry(0.14, 0.14, 2.6);
+  const bMat = new THREE.MeshBasicMaterial({ color: 0xffc860, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
+  for (let i = 0; i < 28; i++) {
+    const m = new THREE.Mesh(bGeo, bMat);
+    m.visible = false;
+    scene.add(m);
+    bullets.push({ mesh: m, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, alive: false });
+  }
+}
+const B_SPEED = 400, FIRE_DT = 0.085;
+let fireTimer = 0, gunSide = 1;
+function spawnBullet() {
+  const b = bullets.find(b => !b.alive);
+  if (!b) return;
+  const f = fwdVec();
+  gunSide = -gunSide;
+  b.pos.copy(F.pos).addScaledVector(f, 5.4);
+  b.pos.x += Math.cos(F.yaw) * gunSide * 1.1;      // alternating wing guns
+  b.pos.z += -Math.sin(F.yaw) * gunSide * 1.1;
+  b.pos.y -= 0.35;
+  b.vel.copy(f).multiplyScalar(F.v + B_SPEED);
+  b.vel.x += rand(-1.6, 1.6); b.vel.y += rand(-1.6, 1.6); b.vel.z += rand(-1.6, 1.6);
+  b.life = 1.6; b.alive = true;
+  b.mesh.visible = true;
+  b.mesh.position.copy(b.pos);
+  b.mesh.lookAt(tmpV.copy(b.pos).add(b.vel));
+  burst(b.pos, 2, 4, 1, 0.7, 0.3);                 // muzzle spark
+}
+
+/* enemy planes: simple dark-red bandits on circular patrol paths */
+function buildBandit() {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x5a2020, roughness: 0.5, metalness: 0.3 });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.6, 4.2, 4, 10), bodyMat);
+  body.rotation.x = Math.PI / 2;
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(8, 0.14, 1.5), bodyMat);
+  wing.position.y = -0.2;
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.12, 1.0), bodyMat);
+  tail.position.set(0, 0.35, -2.4);
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.3, 1.1), bodyMat);
+  fin.position.set(0, 0.7, -2.5);
+  const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), glass);
+  canopy.position.set(0, 0.55, 0.6);
+  g.add(body, wing, tail, fin, canopy);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return g;
+}
+const bandits = [];
+function resetBandit(e) {
+  e.cx = rand(-3000, 3000); e.cz = rand(-3000, 3000);
+  e.r = rand(260, 640);
+  let maxT = -20;
+  for (let i = 0; i < 20; i++) {
+    const a = i / 20 * Math.PI * 2;
+    maxT = Math.max(maxT, terrainHeight(e.cx + Math.cos(a) * e.r, e.cz + Math.sin(a) * e.r));
+  }
+  e.alt = maxT + rand(90, 230);
+  e.phase = rand(0, Math.PI * 2);
+  e.omega = rand(52, 72) / e.r * (Math.random() < 0.5 ? 1 : -1);
+  e.hp = 2; e.smokeT = 0; e.respawn = 0;
+  e.grp.visible = true;
+}
+for (let i = 0; i < 5; i++) {
+  const e = { grp: buildBandit() };
+  scene.add(e.grp);
+  resetBandit(e);
+  bandits.push(e);
+}
+function hitBandit(e) {
+  e.hp--;
+  burst(e.grp.position, 24, 12, 1, 0.6, 0.2);
+  if (e.hp <= 0) {
+    burst(e.grp.position, 70, 22, 1, 0.5, 0.12);
+    burst(e.grp.position, 40, 10, 0.5, 0.5, 0.5);
+    e.grp.visible = false;
+    e.respawn = 14;
+    F.score.kills++;
+    document.getElementById('killScore').textContent = F.score.kills;
+    sBoom();
+    showMsg('Bandit down! +1', 1.4);
+  } else {
+    sHit();
+    showMsg('Hit!', 0.6);
+  }
+}
+function updateBandits(dt) {
+  for (const e of bandits) {
+    if (!e.grp.visible) {
+      e.respawn -= dt;
+      if (e.respawn <= 0) resetBandit(e);
+      continue;
+    }
+    e.phase += e.omega * dt;
+    const x = e.cx + Math.cos(e.phase) * e.r;
+    const z = e.cz + Math.sin(e.phase) * e.r;
+    const y = e.alt + Math.sin(e.phase * 2.3) * 16;
+    e.grp.position.set(x, y, z);
+    const s = Math.sign(e.omega);
+    const hx = -Math.sin(e.phase) * s, hz = Math.cos(e.phase) * s;
+    e.grp.rotation.set(Math.sin(e.phase * 2.3) * 0.06, Math.atan2(hx, hz), s > 0 ? -0.42 : 0.42, 'YXZ');
+    if (e.hp === 1) {
+      e.smokeT -= dt;
+      if (e.smokeT <= 0) { e.smokeT = 0.07; burst(e.grp.position, 1, 1.5, 0.45, 0.45, 0.48); }
+    }
+    if (F.mode === 'air' && F.pos.distanceToSquared(e.grp.position) < 130) {
+      e.hp = 1; hitBandit(e);                       // bandit explodes...
+      crash('Mid-air collision');                   // ...and so do we
+    }
+  }
+}
+function updateGuns(dt) {
+  fireTimer -= dt;
+  const firing = keys.has('KeyF') && F.mode === 'air';
+  if (sightEl) sightEl.classList.toggle('hot', firing);
+  if (firing && fireTimer <= 0) { fireTimer = FIRE_DT; spawnBullet(); sGun(); }
+  for (const b of bullets) {
+    if (!b.alive) continue;
+    b.life -= dt;
+    b.vel.y -= 3.5 * dt;
+    b.pos.addScaledVector(b.vel, dt);
+    b.mesh.position.copy(b.pos);
+    b.mesh.lookAt(tmpV.copy(b.pos).add(b.vel));
+    let dead = b.life <= 0;
+    if (!dead) {
+      const gy = terrainHeight(b.pos.x, b.pos.z);
+      if (b.pos.y <= gy + 0.2) { burst(b.pos, 6, 5, 1, 0.8, 0.45); dead = true; }
+      else if (b.pos.y < -5.4) { burst(b.pos, 6, 5, 0.6, 0.8, 1); dead = true; }   // splash
+    }
+    if (!dead) {
+      for (const e of bandits) {
+        if (!e.grp.visible) continue;
+        if (b.pos.distanceToSquared(e.grp.position) < 64) { hitBandit(e); dead = true; break; }
+      }
+    }
+    if (dead) { b.alive = false; b.mesh.visible = false; }
+  }
+}
+
+/* =====================================================================
    PARTICLES
 ===================================================================== */
 const MAX_P = 400;
@@ -908,12 +1246,15 @@ const sPop = () => tone(420, 0.25, 'triangle', 0.3, 90);
 const sCrash = () => { tone(120, 0.6, 'sawtooth', 0.4, 40); tone(60, 0.8, 'square', 0.25, 30); };
 const sGear = () => tone(300, 0.12, 'square', 0.12, 180);
 const sLand = () => tone(180, 0.18, 'sine', 0.2, 120);
+const sGun = () => tone(160 + Math.random() * 40, 0.07, 'square', 0.10, 70);
+const sHit = () => tone(500, 0.08, 'square', 0.15, 200);
+const sBoom = () => { tone(90, 0.7, 'sawtooth', 0.38, 28); tone(50, 0.9, 'square', 0.25, 22); };
 
 /* =====================================================================
    FLIGHT MODEL
 ===================================================================== */
-const V_STALL = 32, V_ROTATE = 38, GEAR_H = 2.05;   // wheel bottoms sit at -2.06
-const A_THRUST = 14, DRAG_K = 0.0012, GEAR_DRAG = 2.2;
+const V_STALL = 32, V_ROTATE = 40, GEAR_H = 2.05;   // wheel bottoms sit at -2.06
+const A_THRUST = 14, DRAG_K = 0.0008, GEAR_DRAG = 2.2;
 
 /* Convention: pitch > 0 = nose up, roll > 0 = bank LEFT, yaw increases turning LEFT.
    Stick feel: pull back (ArrowDown) climbs, ArrowLeft banks (and turns) left. */
@@ -926,7 +1267,7 @@ const F = {
   gearTarget: 1,
   vy: 0,
   brake: false,
-  score: { rings: 0, balloons: 0 },
+  score: { rings: 0, balloons: 0, kills: 0 },
   crashTimer: 0,
   camMode: 'chase',
   shake: 0,
@@ -947,6 +1288,15 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => keys.delete(e.code));
 
+/* mouse free-look: cursor offset from screen center steers the view */
+const mouse = { x: 0, y: 0, tx: 0, ty: 0, idle: 99 };
+addEventListener('mousemove', e => {
+  mouse.tx = (e.clientX / innerWidth) * 2 - 1;
+  mouse.ty = (e.clientY / innerHeight) * 2 - 1;
+  mouse.idle = 0;
+});
+addEventListener('mouseleave', () => { mouse.idle = 99; });
+
 function resetFlight() {
   F.mode = 'ground';
   F.pos.set(0, GEAR_H, -460);
@@ -954,7 +1304,7 @@ function resetFlight() {
   F.v = 0; F.throttle = 0; F.rpm = 0; F.vy = 0;
   F.gearT = 1; F.gearTarget = 1;
   F.crashTimer = 0; F.shake = 0; F.stalling = false; F.rotateCalled = false;
-  showMsg('Throttle up (W) — pull back (Arrow Down) at 75 kt', 2.4);
+  showMsg('Throttle up (W) — pull back (Arrow Down) at 80 kt', 2.4);
 }
 
 const msgEl = document.getElementById('msg');
@@ -997,12 +1347,14 @@ function stepFlight(dt) {
   }
 
   const drag = DRAG_K * F.v * F.v + GEAR_DRAG * F.gearT * (F.mode === 'air' ? 1 : 0);
-  F.rpm += (F.throttle - F.rpm) * Math.min(1, dt * 1.6);   // engine spool lag
-  const thrust = A_THRUST * F.rpm * (0.55 + 0.012 * F.v);  // power builds with speed
+  const spool = F.throttle > F.rpm ? 0.9 : 2.2;            // spool up slow, down fast
+  F.rpm += (F.throttle - F.rpm) * Math.min(1, dt * spool); // engine spool lag
+  // gentle static thrust that swells with airspeed: a slow, deliberate takeoff roll
+  const thrust = A_THRUST * F.rpm * (0.10 + 0.005 * F.v + 0.000028 * F.v * F.v);
 
   if (F.mode === 'ground') {
     const onRunway = Math.abs(F.pos.x) < 16 && Math.abs(F.pos.z) < 505;
-    let decel = drag + (onRunway ? 0.4 : 6);            // grass is heavy
+    let decel = drag + (onRunway ? 0.4 : 1.1);          // grass slows you, but you can still depart
     if (F.brake) decel += 12;
     F.v = Math.max(0, F.v + (thrust - decel) * dt);
 
@@ -1018,7 +1370,7 @@ function stepFlight(dt) {
     }
     // rotation -> liftoff (pull back on the stick)
     if (keys.has('ArrowDown') && F.v > V_ROTATE) {
-      F.pitch = Math.min(F.pitch + 0.55 * dt, 0.22);
+      F.pitch = Math.min(F.pitch + 0.45 * dt, 0.2);
       if (F.pitch > 0.12) {
         F.mode = 'air';
         showMsg('Positive climb — gear up (G)', 1.8);
@@ -1150,10 +1502,22 @@ const camQuat = new THREE.Quaternion();
 const camTargetPos = new THREE.Vector3();
 const camLook = new THREE.Vector3();
 const chasePos = new THREE.Vector3(0, 5, -475);
+const lookEuler = new THREE.Euler();
+const lookQuat = new THREE.Quaternion(), mouseQuat = new THREE.Quaternion();
 
 function updateCamera(dt) {
   camEuler.set(-F.pitch, F.yaw, -F.roll, 'YXZ');
   camQuat.setFromEuler(camEuler);
+  // mouse free-look: follows the cursor, eases back to forward after 2.5 s idle
+  mouse.idle += dt;
+  const wantX = mouse.idle > 2.5 ? 0 : mouse.tx;
+  const wantY = mouse.idle > 2.5 ? 0 : mouse.ty;
+  const ms = 1 - Math.exp(-7 * dt);
+  mouse.x += (wantX - mouse.x) * ms;
+  mouse.y += (wantY - mouse.y) * ms;
+  lookEuler.set(mouse.y * 1.05, mouse.x * 2.35, 0, 'YXZ');
+  mouseQuat.setFromEuler(lookEuler);
+  lookQuat.copy(camQuat).multiply(mouseQuat);
   if (F.camMode === 'chase') {
     camTargetPos.set(0, 4.4, -14).applyQuaternion(camQuat).add(F.pos);
     const s = 1 - Math.exp(-5 * dt);
@@ -1163,11 +1527,11 @@ function updateCamera(dt) {
       camera.position.x += (Math.random() - 0.5) * F.shake * 2;
       camera.position.y += (Math.random() - 0.5) * F.shake * 2;
     }
-    camLook.set(0, 1.2, 25).applyQuaternion(camQuat).add(F.pos);
+    camLook.set(0, 1.2, 25).applyQuaternion(lookQuat).add(F.pos);
     camera.lookAt(camLook);
   } else {
     camera.position.set(0, 1.5, 2.4).applyQuaternion(camQuat).add(F.pos);
-    camLook.set(0, 1.2, 60).applyQuaternion(camQuat).add(F.pos);
+    camLook.set(0, 1.2, 60).applyQuaternion(lookQuat).add(F.pos);
     camera.lookAt(camLook);
   }
   // keep camera above terrain
@@ -1246,6 +1610,8 @@ function animate() {
   prevPos.copy(F.pos);
   stepFlight(dt);
   checkFlyThrough();
+  updateGuns(dt);
+  updateBandits(dt);
 
   // plane visuals
   plane.visible = F.mode !== 'crashed';

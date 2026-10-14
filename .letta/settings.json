@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Select-String -LiteralPath \"C:\\Users\\ali\\Documents\\letta project\\Flight Simulator 3D — Golden Hour.html\" -Pattern \"lighthouse|tower|AIRCRAFT|RINGS|BALLOONS|PARTICLES\")",
+      "Bash(Select-String -LiteralPath \"C:\\Users\\ali\\Documents\\letta project\\Flight Simulator 3D — Golden Hour.html\" -Pattern \"function fwdVec|fwdVec =|function crash|crash =|function showMsg|showMsg =|const keys|keys =|const tone|function tone|sLand|sCrash|const glass\")",
+      "Bash(Select-String -LiteralPath \"C:\\Users\\ali\\Documents\\letta project\\Flight Simulator 3D — Golden Hour.html\" -Pattern \"score: \\{|checkFlyThrough|updateParticles\\(dt\\)|stepFlight\")",
+      "Bash($f = Get-ChildItem \"C:\\Users\\ali\\Documents\\letta project\" -Filter \"*Golden Hour.html\")"
+    ]
+  }
+}
