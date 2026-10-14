@@ -335,7 +335,7 @@ sun.shadow.camera.left = -150; sun.shadow.camera.right = 150;
 sun.shadow.camera.top = 150; sun.shadow.camera.bottom = -150;
 sun.shadow.camera.near = 10; sun.shadow.camera.far = 800;
 sun.shadow.bias = -0.0004;
-sun.shadow.normalBias = 3.5;               // low sun angle needs help on slopes
+sun.shadow.normalBias = 0.4;               // per-frame adaptive bias (see animate)
 sun.shadow.camera.updateProjectionMatrix();
 scene.add(sun, sun.target);
 
@@ -1272,6 +1272,11 @@ function animate() {
   // shadow camera follows the plane
   sun.position.copy(F.pos).addScaledVector(SUN_DIR, 220);
   sun.target.position.copy(F.pos);
+  // normalBias adapts to altitude: a fixed 3.5 m bias eats the shadow of a
+  // plane sitting 2 m off the ground — small bias near the surface, large
+  // bias up high where the low golden-hour sun causes slope acne
+  const aglSh = F.pos.y - terrainHeight(F.pos.x, F.pos.z);
+  sun.shadow.normalBias = THREE.MathUtils.lerp(0.4, 3.5, THREE.MathUtils.clamp(aglSh / 60, 0, 1));
 
   // engine sound (follows spooled RPM)
   if (eng) {
