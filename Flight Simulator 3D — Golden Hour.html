@@ -94,7 +94,7 @@
 
 <div id="hint" class="panel">
   <b>W/S</b> throttle &nbsp; <b>Arrows</b> stick (pull <b>Down</b> to climb) &nbsp; <b>A/D</b> rudder &nbsp;
-  <b>G</b> gear &nbsp; <b>F</b> fire &nbsp; <b>Mouse</b> look &nbsp; <b>Space</b> brake &nbsp; <b>C</b> camera &nbsp; <b>R</b> reset
+  <b>G</b> gear &nbsp; <b>Click/F</b> fire &nbsp; <b>Mouse</b> look &nbsp; <b>Space</b> brake &nbsp; <b>C</b> camera &nbsp; <b>R</b> reset
 </div>
 
 <div id="boot">booting flight simulator...</div>
@@ -317,7 +317,7 @@ const haloTex = glowTexture('rgba(255,236,190,0.95)', 'rgba(255,200,120,0)');
 /* =====================================================================
    SKY / SUN / CLOUDS  (physical sky shader, low golden-hour sun)
 ===================================================================== */
-const SUN_DIR = new THREE.Vector3(0.62, 0.20, 0.45).normalize();   // ~14 deg elevation
+const SUN_DIR = new THREE.Vector3(0.62, 0.45, 0.45).normalize();   // ~14 deg elevation
 
 const sky = new Sky();
 sky.scale.setScalar(15000);
@@ -1128,7 +1128,7 @@ function updateBandits(dt) {
 }
 function updateGuns(dt) {
   fireTimer -= dt;
-  const firing = keys.has('KeyF') && F.mode === 'air';
+  const firing = (keys.has('KeyF') || mouse.down) && F.mode === 'air';
   if (sightEl) sightEl.classList.toggle('hot', firing);
   if (firing && fireTimer <= 0) { fireTimer = FIRE_DT; spawnBullet(); sGun(); }
   for (const b of bullets) {
@@ -1289,13 +1289,15 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => keys.delete(e.code));
 
 /* mouse free-look: cursor offset from screen center steers the view */
-const mouse = { x: 0, y: 0, tx: 0, ty: 0, idle: 99 };
+const mouse = { x: 0, y: 0, tx: 0, ty: 0, idle: 99, down: false };
 addEventListener('mousemove', e => {
   mouse.tx = (e.clientX / innerWidth) * 2 - 1;
   mouse.ty = (e.clientY / innerHeight) * 2 - 1;
   mouse.idle = 0;
 });
-addEventListener('mouseleave', () => { mouse.idle = 99; });
+addEventListener('mouseleave', () => { mouse.idle = 99; mouse.down = false; });
+addEventListener('mousedown', e => { if (e.button === 0) mouse.down = true; });
+addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
 
 function resetFlight() {
   F.mode = 'ground';
@@ -1350,7 +1352,7 @@ function stepFlight(dt) {
   const spool = F.throttle > F.rpm ? 0.9 : 2.2;            // spool up slow, down fast
   F.rpm += (F.throttle - F.rpm) * Math.min(1, dt * spool); // engine spool lag
   // gentle static thrust that swells with airspeed: a slow, deliberate takeoff roll
-  const thrust = A_THRUST * F.rpm * (0.10 + 0.005 * F.v + 0.000028 * F.v * F.v);
+  const thrust = A_THRUST * F.rpm * (0.11 + 0.005 * F.v + 0.000028 * F.v * F.v);
 
   if (F.mode === 'ground') {
     const onRunway = Math.abs(F.pos.x) < 16 && Math.abs(F.pos.z) < 505;
@@ -1370,7 +1372,7 @@ function stepFlight(dt) {
     }
     // rotation -> liftoff (pull back on the stick)
     if (keys.has('ArrowDown') && F.v > V_ROTATE) {
-      F.pitch = Math.min(F.pitch + 0.45 * dt, 0.2);
+      F.pitch = Math.min(F.pitch + 0.45 * dt, 0.17);
       if (F.pitch > 0.12) {
         F.mode = 'air';
         showMsg('Positive climb — gear up (G)', 1.8);
@@ -1508,14 +1510,15 @@ const lookQuat = new THREE.Quaternion(), mouseQuat = new THREE.Quaternion();
 function updateCamera(dt) {
   camEuler.set(-F.pitch, F.yaw, -F.roll, 'YXZ');
   camQuat.setFromEuler(camEuler);
-  // mouse free-look: follows the cursor, eases back to forward after 2.5 s idle
+  // mouse free-look: view drags WITH the cursor; eases back to forward after 5 s idle
   mouse.idle += dt;
-  const wantX = mouse.idle > 2.5 ? 0 : mouse.tx;
-  const wantY = mouse.idle > 2.5 ? 0 : mouse.ty;
-  const ms = 1 - Math.exp(-7 * dt);
+  const recentering = mouse.idle > 5;
+  const wantX = recentering ? 0 : mouse.tx;
+  const wantY = recentering ? 0 : mouse.ty;
+  const ms = 1 - Math.exp((recentering ? -2.5 : -7) * dt);
   mouse.x += (wantX - mouse.x) * ms;
   mouse.y += (wantY - mouse.y) * ms;
-  lookEuler.set(mouse.y * 1.05, mouse.x * 2.35, 0, 'YXZ');
+  lookEuler.set(mouse.y * 1.05, -mouse.x * 2.35, 0, 'YXZ');
   mouseQuat.setFromEuler(lookEuler);
   lookQuat.copy(camQuat).multiply(mouseQuat);
   if (F.camMode === 'chase') {
@@ -1661,7 +1664,7 @@ function animate() {
 }
 
 bootLog('starting engine...');
-showMsg('Throttle up with W — pull back (Arrow Down) at 75 kt', 4);
+showMsg('Throttle up with W — pull back (Arrow Down) at 80 kt', 4);
 /* debug/demo: open with #air to start airborne over the lagoon (used for visual testing) */
 if (location.hash === '#air') {
   F.mode = 'air';
@@ -1691,6 +1694,6 @@ if (location.hash === '#probe') {
 }
 animate();
 </script>
-<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920" integrity="sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==" data-cf-beacon='{"version":"2024.11.0","token":"3da06ac6e1a343d29c6076375ad66ebf","spa":2}' crossorigin="anonymous"></script>
+
 </body>
 </html>
